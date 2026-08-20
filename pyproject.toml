@@ -1,0 +1,52 @@
+[build-system]
+requires = ["setuptools>=80"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "quiz-game-backend"
+version = "0.1.0"
+description = "Secure FastAPI backend for Quiz Game"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "alembic==1.18.5",
+    "asyncpg==0.31.0",
+    "fastapi==0.140.8",
+    "pydantic[email]>=2.12,<3",
+    "pydantic-settings==2.14.2",
+    "PyJWT==2.13.0",
+    "pwdlib[argon2]==0.3.0",
+    "SQLAlchemy==2.0.51",
+    "uvicorn[standard]==0.51.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "httpx>=0.28,<1",
+    "mypy>=1.18,<2",
+    "pytest>=8.4,<10",
+    "pytest-asyncio>=1.2,<2",
+    "ruff>=0.14,<1",
+]
+
+[tool.setuptools.packages.find]
+include = ["app*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
+asyncio_mode = "auto"
+
+[tool.ruff]
+target-version = "py312"
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP", "S", "ASYNC"]
+ignore = ["S101"]
+
+[tool.mypy]
+python_version = "3.12"
+strict = true
+plugins = ["pydantic.mypy"]
+
