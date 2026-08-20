@@ -7,6 +7,6 @@ class UserRead(BaseModel):
 
     id: str
     email: EmailStr
-    username: str
+    username: str | None
     is_active: bool
     created_at: datetime

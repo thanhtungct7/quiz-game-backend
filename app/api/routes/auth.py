@@ -6,13 +6,14 @@ from app.schemas.user import UserRead
 from app.core.exceptions import (InvalidCredentialsError, InactiveUserError)
 from app.services import auth_service
 from app.services.auth_service import AuthService
+from app.api.dependencies import AuthServiceDependency
 router = APIRouter()
 
 
 @router.post("/register", response_model=UserRead, status_code=status.HTTP_201_CREATED)
-async def register(payload: RegisterRequest, db: DatabaseSession) -> User:
+async def register(payload: RegisterRequest, service: AuthServiceDependency) -> User:
     try:
-        return await auth_service.register(
+        return await service.register(
             email=str(payload.email),
             password=payload.password,
         )
