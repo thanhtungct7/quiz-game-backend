@@ -1,20 +1,17 @@
-from app.core.config import settings
-
-from app.schemas.auth import TokenResponse
-from app.core.security import create_access_token, create_refresh_token, verify_password
-from app.core.exceptions import (InvalidCredentialsError, InactiveUserError)
+from app.core.security import hash_password
+from app.models.user import User
 from app.repository.user_repository import UserRepository
-from app.repository.refresh_token_repository import RefreshTokenRepository
+
 
 class UserService:
-    
-
-    def __init__(self, user_repository):
+    def __init__(self, user_repository: UserRepository) -> None:
         self.user_repository = user_repository
 
-    def create_user(self, 
-                    email: str, 
-                    password: str, 
-                    username: str
-                    ):
-        return self.user_repository.create_user(email=email, password=password, username=username)
+    async def create_user(
+        self,
+        email: str,
+        password: str,
+        username: str | None = None,
+    ) -> User:
+        user = User(email=email, hashed_password=hash_password(password), username=username)
+        return await self.user_repository.create_user(user)

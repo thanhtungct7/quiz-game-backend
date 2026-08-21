@@ -7,6 +7,7 @@ Revises:
 from collections.abc import Sequence
 
 import sqlalchemy as sa
+
 from alembic import op
 
 revision: str = "20260819_0001"
@@ -36,4 +37,3 @@ def upgrade() -> None:
 def downgrade() -> None:
     op.drop_index(op.f("ix_users_email"), table_name="users")
     op.drop_table("users")
-

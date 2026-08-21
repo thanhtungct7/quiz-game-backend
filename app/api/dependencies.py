@@ -9,8 +9,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.security import decode_access_token
 from app.db.session import get_db
 from app.models.user import User
-from app.repository.user_repository import UserRepository
 from app.repository.refresh_token_repository import RefreshTokenRepository
+from app.repository.user_repository import UserRepository
 from app.services.auth_service import AuthService
 
 bearer_scheme = HTTPBearer(auto_error=False)
@@ -39,9 +39,8 @@ async def get_current_user(
         raise unauthorized
     return user
 
-def get_auth_service(
-        db: DatabaseSession
-) -> AuthService:
+
+def get_auth_service(db: DatabaseSession) -> AuthService:
     return AuthService(
         users=UserRepository(db),
         refresh_tokens=RefreshTokenRepository(db),

@@ -29,4 +29,3 @@ async def readiness(db: DatabaseSession) -> HealthResponse:
             detail="Database is unavailable",
         ) from exc
     return HealthResponse(status="ok")
-

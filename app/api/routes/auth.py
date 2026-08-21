@@ -1,12 +1,25 @@
-from fastapi import APIRouter, HTTPException, status
+from fastapi import APIRouter, HTTPException, Response, status
 
-from app.models.user import User
-from app.schemas.auth import LoginRequest, TokenResponse, RegisterRequest
-from app.schemas.user import UserRead
-from app.core.exceptions import (InvalidCredentialsError, InactiveUserError)
-from app.services import auth_service
-from app.services.auth_service import AuthService
 from app.api.dependencies import AuthServiceDependency
+from app.core.exceptions import (
+    AccountLinkRequiredError,
+    EmailAlreadyExistsError,
+    GoogleAuthUnavailableError,
+    InactiveUserError,
+    InvalidCredentialsError,
+    InvalidGoogleTokenError,
+    InvalidRefreshTokenError,
+)
+from app.models.user import User
+from app.schemas.auth import (
+    GoogleLoginRequest,
+    LoginRequest,
+    RefreshTokenRequest,
+    RegisterRequest,
+    TokenResponse,
+)
+from app.schemas.user import UserRead
+
 router = APIRouter()
 
 
@@ -16,8 +29,9 @@ async def register(payload: RegisterRequest, service: AuthServiceDependency) -> 
         return await service.register(
             email=str(payload.email),
             password=payload.password,
+            username=payload.username,
         )
-    except ValueError as exc:
+    except EmailAlreadyExistsError as exc:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail=str(exc),
@@ -25,8 +39,7 @@ async def register(payload: RegisterRequest, service: AuthServiceDependency) -> 
 
 
 @router.post("/login", response_model=TokenResponse)
-async def login(payload: LoginRequest,
-                service: AuthService) -> TokenResponse:
+async def login(payload: LoginRequest, service: AuthServiceDependency) -> TokenResponse:
     try:
         return await service.login(
             email=str(payload.email),
@@ -38,5 +51,56 @@ async def login(payload: LoginRequest,
             detail=str(exc),
             headers={"WWW-Authenticate": "Bearer"},
         ) from exc
-    
 
+
+@router.post("/refresh", response_model=TokenResponse)
+async def refresh_token(
+    payload: RefreshTokenRequest,
+    service: AuthServiceDependency,
+) -> TokenResponse:
+    try:
+        return await service.refresh(payload.refresh_token)
+    except InvalidRefreshTokenError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail=str(exc),
+            headers={"WWW-Authenticate": "Bearer"},
+        ) from exc
+
+
+@router.post("/logout", status_code=status.HTTP_204_NO_CONTENT)
+async def logout(payload: RefreshTokenRequest, service: AuthServiceDependency) -> Response:
+    await service.logout(payload.refresh_token)
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+@router.post("/google", response_model=TokenResponse)
+async def google_login(
+    payload: GoogleLoginRequest,
+    service: AuthServiceDependency,
+) -> TokenResponse:
+    try:
+        return await service.login_with_google(payload.id_token)
+    except InvalidGoogleTokenError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid or expired Google ID token",
+            headers={"WWW-Authenticate": "Bearer"},
+        ) from exc
+    except InactiveUserError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Account is inactive",
+            headers={"WWW-Authenticate": "Bearer"},
+        ) from exc
+    except AccountLinkRequiredError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=str(exc),
+        ) from exc
+    except GoogleAuthUnavailableError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Google authentication is temporarily unavailable",
+            headers={"Retry-After": "30"},
+        ) from exc

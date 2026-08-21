@@ -24,4 +24,3 @@ def configure_logging(debug: bool = False) -> None:
             },
         }
     )
-

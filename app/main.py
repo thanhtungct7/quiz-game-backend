@@ -79,4 +79,3 @@ async def root() -> dict[str, str]:
 
 
 app.include_router(api_router, prefix=settings.api_v1_prefix)
-
