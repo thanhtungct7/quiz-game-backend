@@ -1,6 +1,9 @@
 from fastapi import APIRouter, HTTPException, Response, status
 
-from app.api.dependencies import AuthServiceDependency
+from app.api.dependencies import (
+    AuthServiceDependency,
+    PasswordResetServiceDependency,
+)
 from app.core.exceptions import (
     AccountLinkRequiredError,
     EmailAlreadyExistsError,
@@ -9,6 +12,7 @@ from app.core.exceptions import (
     InvalidCredentialsError,
     InvalidGoogleTokenError,
     InvalidRefreshTokenError,
+    InvalidPasswordResetTokenError,
 )
 from app.models.user import User
 from app.schemas.auth import (
@@ -17,6 +21,8 @@ from app.schemas.auth import (
     RefreshTokenRequest,
     RegisterRequest,
     TokenResponse,
+    ForgotPasswordRequest,
+    ResetPasswordRequest,
 )
 from app.schemas.user import UserRead
 
@@ -104,3 +110,31 @@ async def google_login(
             detail="Google authentication is temporarily unavailable",
             headers={"Retry-After": "30"},
         ) from exc
+
+
+@router.post("/forgot-password", status_code=status.HTTP_202_ACCEPTED)
+async def forgot_password(
+    payload: ForgotPasswordRequest,
+    service: PasswordResetServiceDependency,
+) -> Response:
+    await service.request_password_reset(str(payload.email))
+    return {
+        "message": "If the email exists, a password reset link has been sent to the provided email address."
+    }
+
+
+@router.post("/reset-password", status_code=status.HTTP_204_NO_CONTENT)
+async def reset_password(
+    payload: ResetPasswordRequest,
+    service: PasswordResetServiceDependency,
+) -> Response:
+    try:
+        await service.reset_password(payload.token, payload.new_password)
+        return Response(status_code=status.HTTP_204_NO_CONTENT)
+    except InvalidPasswordResetTokenError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(exc),
+        ) from exc
+
+    return Response(status_code=status.HTTP_204_NO_CONTENT)

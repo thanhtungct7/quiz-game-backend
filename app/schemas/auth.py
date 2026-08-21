@@ -46,3 +46,16 @@ class RefreshTokenRequest(BaseModel):
 class GoogleLoginRequest(BaseModel):
     id_token: str = Field(min_length=32, max_length=2048)
 
+
+class ForgotPasswordRequest(BaseModel):
+    email: EmailStr
+
+    @field_validator("email")
+    @classmethod
+    def normalize_email(cls, value: EmailStr) -> str:
+        return str(value).strip().lower()
+
+
+class ResetPasswordRequest(BaseModel):
+    token: str = Field(min_length=32, max_length=512)
+    new_password: str = Field(min_length=8, max_length=128)

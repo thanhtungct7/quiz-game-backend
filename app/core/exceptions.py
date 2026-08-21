@@ -32,3 +32,6 @@ class AccountLinkRequiredError(ApplicationError):
 
 class GoogleAuthUnavailableError(ApplicationError):
     """Raised when Google's identity service cannot be reached."""
+
+class InvalidPasswordResetTokenError(AuthenticationError):
+    """Raised when a password reset token is invalid, expired, or revoked."""
