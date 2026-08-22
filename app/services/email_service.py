@@ -1,3 +1,4 @@
+import asyncio
 import html
 import smtplib
 import ssl
@@ -58,6 +59,12 @@ class SmtpEmailService:
 </html>
 """, subtype="html",
         )
+
+        # smtplib is blocking; run the connect/login/send on a worker thread so
+        # it doesn't stall the event loop for the duration of the SMTP roundtrip.
+        await asyncio.to_thread(self._send_sync, message)
+
+    def _send_sync(self, message: EmailMessage) -> None:
         context = ssl.create_default_context()
 
         if self.config.smtp_use_ssl:
