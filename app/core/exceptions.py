@@ -35,3 +35,31 @@ class GoogleAuthUnavailableError(ApplicationError):
 
 class InvalidPasswordResetTokenError(AuthenticationError):
     """Raised when a password reset token is invalid, expired, or revoked."""
+
+
+class InvalidChallengeOptionsError(ApplicationError):
+    """Raised when a challenge's answer options are inconsistent."""
+
+
+class DuplicateOrderIndexError(ApplicationError):
+    """Raised when an order_index collides with a sibling under the same parent."""
+
+
+class CourseNotFoundError(ApplicationError):
+    """Raised when a course cannot be found."""
+
+
+class UnitNotFoundError(ApplicationError):
+    """Raised when a unit cannot be found."""
+
+
+class LessonNotFoundError(ApplicationError):
+    """Raised when a lesson cannot be found."""
+
+
+class ChallengeNotFoundError(ApplicationError):
+    """Raised when a challenge cannot be found."""
+
+
+class ChallengeOptionNotFoundError(ApplicationError):
+    """Raised when a challenge option cannot be found."""
