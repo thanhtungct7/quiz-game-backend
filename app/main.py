@@ -11,7 +11,9 @@ from starlette.middleware.trustedhost import TrustedHostMiddleware
 from app.api.router import api_router
 from app.core.config import settings
 from app.core.logging import configure_logging
-from app.db.session import engine
+from app.db.session import AsyncSessionFactory, engine
+from app.repository.user_repository import UserRepository
+from app.services.admin_bootstrap_service import AdminSeedService, seed_first_admin
 
 configure_logging(settings.debug)
 logger = logging.getLogger(__name__)
@@ -20,6 +22,8 @@ logger = logging.getLogger(__name__)
 @asynccontextmanager
 async def lifespan(_: FastAPI) -> AsyncIterator[None]:
     logger.info("Starting %s in %s mode", settings.app_name, settings.environment)
+    async with AsyncSessionFactory() as db:
+        await seed_first_admin(AdminSeedService(UserRepository(db)))
     yield
     await engine.dispose()
     logger.info("Application stopped")

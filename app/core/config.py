@@ -1,7 +1,7 @@
 from functools import lru_cache
 from typing import Literal
 
-from pydantic import Field, SecretStr, model_validator, AnyHttpUrl, EmailStr
+from pydantic import AnyHttpUrl, EmailStr, Field, SecretStr, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 DEFAULT_DEVELOPMENT_SECRET = "development-only-change-this-secret"  # noqa: S105
@@ -28,7 +28,9 @@ class Settings(BaseSettings):
     database_url: str = "postgresql+asyncpg://quiz:quiz@localhost:5432/quiz"
     cors_origins: list[str] = ["http://localhost:3000"]
     allowed_hosts: list[str] = ["localhost", "127.0.0.1", "10.0.2.2", "testserver"]
-    password_reset_url: AnyHttpUrl = "http://localhost:3000/reset-password"
+    password_reset_url: AnyHttpUrl = AnyHttpUrl(  # noqa: S105 (URL, not a secret)
+        "http://localhost:3000/reset-password"
+    )
     
     smtp_host: str = "localhost"
     smtp_port: int = Field(default=1025, ge=1, le=65535)
@@ -40,12 +42,28 @@ class Settings(BaseSettings):
     smtp_timeout_seconds: float = Field(default=10, gt=0, le=60)
 
     google_web_client_id: str = Field(min_length=1)
+
+    first_admin_email: EmailStr | None = None
+    first_admin_password: SecretStr | None = Field(default=None, min_length=8, max_length=128)
+    first_admin_username: str | None = Field(default=None, min_length=1, max_length=50)
+
     model_config = SettingsConfigDict(
         env_file=".env",
         env_file_encoding="utf-8",
         case_sensitive=False,
         extra="ignore",
     )
+
+    @field_validator(
+        "first_admin_email", "first_admin_password", "first_admin_username", mode="before"
+    )
+    @classmethod
+    def _blank_env_value_means_unset(cls, value: object) -> object:
+        # Empty-string env vars (e.g. `FIRST_ADMIN_EMAIL=` left blank in .env)
+        # must mean "not configured", not "invalid email"/"password too short".
+        if isinstance(value, str) and value.strip() == "":
+            return None
+        return value
 
     @property
     def is_production(self) -> bool:
@@ -68,6 +86,11 @@ class Settings(BaseSettings):
         if (self.smtp_username is None) != (self.smtp_password is None):
             raise ValueError(
                 "SMTP_USERNAME and SMTP_PASSWORD must be configured together"
+            )
+
+        if (self.first_admin_email is None) != (self.first_admin_password is None):
+            raise ValueError(
+                "FIRST_ADMIN_EMAIL and FIRST_ADMIN_PASSWORD must be configured together"
             )
 
         return self
