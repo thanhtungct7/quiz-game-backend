@@ -1,12 +1,12 @@
-from typing import Protocol
-import asyncio
 import html
 import smtplib
 import ssl
 from email.message import EmailMessage
 from typing import Protocol
 from urllib.parse import quote
+
 from app.core.config import Settings
+
 
 class EmailService(Protocol):
     async def send_password_reset(

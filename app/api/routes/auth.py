@@ -11,18 +11,18 @@ from app.core.exceptions import (
     InactiveUserError,
     InvalidCredentialsError,
     InvalidGoogleTokenError,
-    InvalidRefreshTokenError,
     InvalidPasswordResetTokenError,
+    InvalidRefreshTokenError,
 )
 from app.models.user import User
 from app.schemas.auth import (
+    ForgotPasswordRequest,
     GoogleLoginRequest,
     LoginRequest,
     RefreshTokenRequest,
     RegisterRequest,
-    TokenResponse,
-    ForgotPasswordRequest,
     ResetPasswordRequest,
+    TokenResponse,
 )
 from app.schemas.user import UserRead
 
@@ -116,10 +116,13 @@ async def google_login(
 async def forgot_password(
     payload: ForgotPasswordRequest,
     service: PasswordResetServiceDependency,
-) -> Response:
+) -> dict[str, str]:
     await service.request_password_reset(str(payload.email))
     return {
-        "message": "If the email exists, a password reset link has been sent to the provided email address."
+        "message": (
+            "If the email exists, a password reset link has been sent to the "
+            "provided email address."
+        )
     }
 
 
