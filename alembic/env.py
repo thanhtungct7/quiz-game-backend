@@ -14,6 +14,7 @@ from app.models import (  # noqa: F401
     Lesson,
     PasswordResetToken,
     RefreshToken,
+    Topic,
     Unit,
     User,
 )

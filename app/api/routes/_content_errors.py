@@ -7,8 +7,10 @@ from app.core.exceptions import (
     ChallengeOptionNotFoundError,
     CourseNotFoundError,
     DuplicateOrderIndexError,
+    DuplicateTopicNameError,
     InvalidChallengeOptionsError,
     LessonNotFoundError,
+    TopicNotFoundError,
     UnitNotFoundError,
 )
 
@@ -18,8 +20,13 @@ _NOT_FOUND_ERRORS = (
     LessonNotFoundError,
     ChallengeNotFoundError,
     ChallengeOptionNotFoundError,
+    TopicNotFoundError,
 )
-_BAD_REQUEST_ERRORS = (InvalidChallengeOptionsError, DuplicateOrderIndexError)
+_BAD_REQUEST_ERRORS = (
+    InvalidChallengeOptionsError,
+    DuplicateOrderIndexError,
+    DuplicateTopicNameError,
+)
 
 
 def raise_content_http_error(exc: Exception) -> NoReturn:

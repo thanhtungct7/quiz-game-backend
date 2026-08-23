@@ -63,3 +63,11 @@ class ChallengeNotFoundError(ApplicationError):
 
 class ChallengeOptionNotFoundError(ApplicationError):
     """Raised when a challenge option cannot be found."""
+
+
+class TopicNotFoundError(ApplicationError):
+    """Raised when a topic cannot be found."""
+
+
+class DuplicateTopicNameError(ApplicationError):
+    """Raised when a topic name is already in use."""

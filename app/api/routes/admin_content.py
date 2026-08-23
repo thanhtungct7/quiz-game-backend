@@ -1,5 +1,5 @@
-"""Admin-only CRUD for the question bank: courses, units, lessons, challenges
-and challenge options. Every route requires an authenticated admin user.
+"""Admin-only CRUD for the question bank: courses, units, lessons, challenges,
+challenge options and topics. Every route requires an authenticated admin user.
 """
 
 from fastapi import APIRouter, Response, status
@@ -20,6 +20,10 @@ from app.schemas.course_content import (
     LessonCreate,
     LessonRead,
     LessonUpdate,
+    TopicCreate,
+    TopicRead,
+    TopicStats,
+    TopicUpdate,
     UnitCreate,
     UnitRead,
     UnitUpdate,
@@ -30,6 +34,7 @@ units_router = APIRouter()
 lessons_router = APIRouter()
 challenges_router = APIRouter()
 challenge_options_router = APIRouter()
+topics_router = APIRouter()
 
 # --- Courses -----------------------------------------------------------------
 
@@ -302,3 +307,82 @@ async def delete_challenge_option(
     except ApplicationError as exc:
         raise_content_http_error(exc)
     return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+# --- Topics ----------------------------------------------------------------
+#
+# Topics let questions be filtered and counted independently of the course /
+# unit / lesson hierarchy (e.g. "Grammar", "Vocabulary"). `topic_id` on a
+# challenge is optional, so untagged challenges keep working unchanged.
+
+
+@topics_router.post("", response_model=TopicRead, status_code=status.HTTP_201_CREATED)
+async def create_topic(
+    payload: TopicCreate, _: AdminUser, service: CourseContentServiceDependency
+) -> TopicRead:
+    try:
+        topic = await service.create_topic(payload)
+    except ApplicationError as exc:
+        raise_content_http_error(exc)
+    return TopicRead.model_validate(topic)
+
+
+@topics_router.get("", response_model=list[TopicRead])
+async def list_topics(_: AdminUser, service: CourseContentServiceDependency) -> list[TopicRead]:
+    topics = await service.list_topics()
+    return [TopicRead.model_validate(topic) for topic in topics]
+
+
+# Registered before "/{topic_id}" so "stats" is never matched as a topic id.
+@topics_router.get("/stats", response_model=list[TopicStats])
+async def get_topic_stats(
+    _: AdminUser, service: CourseContentServiceDependency
+) -> list[TopicStats]:
+    return await service.get_topic_stats()
+
+
+@topics_router.get("/{topic_id}", response_model=TopicRead)
+async def get_topic(
+    topic_id: str, _: AdminUser, service: CourseContentServiceDependency
+) -> TopicRead:
+    try:
+        topic = await service.get_topic(topic_id)
+    except ApplicationError as exc:
+        raise_content_http_error(exc)
+    return TopicRead.model_validate(topic)
+
+
+@topics_router.patch("/{topic_id}", response_model=TopicRead)
+async def update_topic(
+    topic_id: str,
+    payload: TopicUpdate,
+    _: AdminUser,
+    service: CourseContentServiceDependency,
+) -> TopicRead:
+    try:
+        topic = await service.update_topic(topic_id, payload)
+    except ApplicationError as exc:
+        raise_content_http_error(exc)
+    return TopicRead.model_validate(topic)
+
+
+@topics_router.delete("/{topic_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_topic(
+    topic_id: str, _: AdminUser, service: CourseContentServiceDependency
+) -> Response:
+    try:
+        await service.delete_topic(topic_id)
+    except ApplicationError as exc:
+        raise_content_http_error(exc)
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+@topics_router.get("/{topic_id}/challenges", response_model=list[ChallengeRead])
+async def list_topic_challenges(
+    topic_id: str, _: AdminUser, service: CourseContentServiceDependency
+) -> list[ChallengeRead]:
+    try:
+        challenges = await service.list_challenges_by_topic(topic_id)
+    except ApplicationError as exc:
+        raise_content_http_error(exc)
+    return [ChallengeRead.model_validate(challenge) for challenge in challenges]

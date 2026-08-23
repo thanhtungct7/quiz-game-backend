@@ -10,6 +10,7 @@ from app.db.base import Base
 if TYPE_CHECKING:
     from app.models.challenge_option import ChallengeOption
     from app.models.lesson import Lesson
+    from app.models.topic import Topic
 
 
 class ChallengeType(StrEnum):
@@ -50,7 +51,13 @@ class Challenge(Base):
         server_default=ChallengeDifficulty.EASY.value,
     )
     order_index: Mapped[int] = mapped_column(Integer, nullable=False)
+    topic_id: Mapped[str | None] = mapped_column(
+        ForeignKey("topics.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
     lesson: Mapped["Lesson"] = relationship("Lesson", back_populates="challenges")
+    topic: Mapped["Topic | None"] = relationship("Topic", back_populates="challenges")
     options: Mapped[list["ChallengeOption"]] = relationship(
         "ChallengeOption",
         back_populates="challenge",

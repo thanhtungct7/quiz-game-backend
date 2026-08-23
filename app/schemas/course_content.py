@@ -53,7 +53,8 @@ class ChallengeCreate(BaseModel):
     type: ChallengeType
     question: str = Field(min_length=1, max_length=1000)
     explanation: str | None = Field(default=None, max_length=2000)
-    difficulty: ChallengeDifficulty = ChallengeDifficulty.MEDIUM
+    difficulty: ChallengeDifficulty = ChallengeDifficulty.EASY
+    topic_id: str | None = None
     order_index: int = Field(gt=0)
     options: list[ChallengeOptionCreate] = Field(min_length=2)
 
@@ -63,6 +64,7 @@ class ChallengeUpdate(BaseModel):
     question: str | None = Field(default=None, min_length=1, max_length=1000)
     explanation: str | None = Field(default=None, max_length=2000)
     difficulty: ChallengeDifficulty | None = None
+    topic_id: str | None = None
     order_index: int | None = Field(default=None, gt=0)
 
 
@@ -77,13 +79,15 @@ class ChallengeRead(BaseModel):
     question: str
     explanation: str | None
     difficulty: ChallengeDifficulty
+    topic_id: str | None
     order_index: int
     options: list[ChallengeOptionRead]
 
 
 class ChallengePublicRead(BaseModel):
     """Learner-facing representation. Never exposes the correct answer (but
-    difficulty is safe to show — it doesn't reveal anything about the answer)."""
+    difficulty and topic are safe to show — neither reveals anything about
+    the answer)."""
 
     model_config = ConfigDict(from_attributes=True)
     id: str
@@ -91,6 +95,7 @@ class ChallengePublicRead(BaseModel):
     type: ChallengeType
     question: str
     difficulty: ChallengeDifficulty
+    topic_id: str | None
     order_index: int
     options: list[ChallengeOptionPublicRead]
 
@@ -160,3 +165,32 @@ class CourseRead(BaseModel):
     id: str
     title: str
     image_src: str
+
+
+# --- Topics ----------------------------------------------------------------
+
+
+class TopicCreate(BaseModel):
+    name: str = Field(min_length=1, max_length=100)
+
+
+class TopicUpdate(BaseModel):
+    name: str | None = Field(default=None, min_length=1, max_length=100)
+
+
+class TopicRead(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+    id: str
+    name: str
+
+
+class TopicStats(BaseModel):
+    """Question count for one topic, broken down by difficulty.
+
+    `topic_id` is None for challenges that have not been assigned a topic yet.
+    """
+
+    topic_id: str | None
+    topic_name: str
+    total: int
+    by_difficulty: dict[str, int]

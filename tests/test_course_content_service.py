@@ -4,12 +4,15 @@ from app.core.exceptions import (
     ChallengeNotFoundError,
     CourseNotFoundError,
     DuplicateOrderIndexError,
+    DuplicateTopicNameError,
     InvalidChallengeOptionsError,
+    TopicNotFoundError,
 )
 from app.models.challenge import Challenge, ChallengeDifficulty, ChallengeType
 from app.models.challenge_option import ChallengeOption
 from app.models.course import Course
 from app.models.lesson import Lesson
+from app.models.topic import Topic
 from app.models.unit import Unit
 from app.schemas.course_content import (
     ChallengeCreate,
@@ -17,6 +20,8 @@ from app.schemas.course_content import (
     ChallengeOptionUpdate,
     ChallengeUpdate,
     CourseUpdate,
+    TopicCreate,
+    TopicUpdate,
     UnitCreate,
 )
 from app.services.course_content_service import CourseContentService
@@ -126,6 +131,12 @@ class FakeChallengeRepository:
     async def list_by_lesson(self, lesson_id: str) -> list[Challenge]:
         return [c for c in self.challenges.values() if c.lesson_id == lesson_id]
 
+    async def list_by_topic(self, topic_id: str) -> list[Challenge]:
+        return [c for c in self.challenges.values() if c.topic_id == topic_id]
+
+    async def list_all(self) -> list[Challenge]:
+        return list(self.challenges.values())
+
     async def get_by_id(self, challenge_id: str) -> Challenge | None:
         return self.challenges.get(challenge_id)
 
@@ -172,6 +183,33 @@ class FakeChallengeOptionRepository:
         self.options.pop(option.id, None)
 
 
+class FakeTopicRepository:
+    def __init__(self) -> None:
+        self.topics: dict[str, Topic] = {}
+
+    async def create(self, topic: Topic) -> Topic:
+        topic.id = topic.id or f"topic-{len(self.topics) + 1}"
+        self.topics[topic.id] = topic
+        return topic
+
+    async def list_all(self) -> list[Topic]:
+        return sorted(self.topics.values(), key=lambda t: t.name)
+
+    async def get_by_id(self, topic_id: str) -> Topic | None:
+        return self.topics.get(topic_id)
+
+    async def get_by_name(self, name: str) -> Topic | None:
+        return next((t for t in self.topics.values() if t.name == name), None)
+
+    async def update(self, topic: Topic, data: dict[str, object]) -> Topic:
+        for field, value in data.items():
+            setattr(topic, field, value)
+        return topic
+
+    async def delete(self, topic: Topic) -> None:
+        self.topics.pop(topic.id, None)
+
+
 def build_service() -> tuple[
     CourseContentService,
     FakeCourseRepository,
@@ -185,12 +223,14 @@ def build_service() -> tuple[
     lessons = FakeLessonRepository()
     challenge_options = FakeChallengeOptionRepository()
     challenges = FakeChallengeRepository(challenge_options)
+    topics = FakeTopicRepository()
     service = CourseContentService(
         courses=courses,  # type: ignore[arg-type]
         units=units,  # type: ignore[arg-type]
         lessons=lessons,  # type: ignore[arg-type]
         challenges=challenges,  # type: ignore[arg-type]
         challenge_options=challenge_options,  # type: ignore[arg-type]
+        topics=topics,  # type: ignore[arg-type]
     )
     return service, courses, units, lessons, challenges, challenge_options
 
@@ -395,7 +435,7 @@ async def test_create_challenge_persists_explanation() -> None:
     )
 
     assert challenge.explanation == "Paris is the capital and largest city of France."
-    assert challenge.difficulty == ChallengeDifficulty.MEDIUM
+    assert challenge.difficulty == ChallengeDifficulty.EASY
 
 
 @pytest.mark.asyncio
@@ -485,3 +525,172 @@ async def test_update_challenge_option_rejects_duplicate_order_index() -> None:
         await service.update_challenge_option(
             option_b.id, ChallengeOptionUpdate(order_index=1)
         )
+
+
+@pytest.mark.asyncio
+async def test_create_topic_rejects_duplicate_name() -> None:
+    service, _, _, _, _, _ = build_service()
+    await service.create_topic(TopicCreate(name="Grammar"))
+
+    with pytest.raises(DuplicateTopicNameError):
+        await service.create_topic(TopicCreate(name="Grammar"))
+
+
+@pytest.mark.asyncio
+async def test_update_topic_rejects_renaming_to_existing_name() -> None:
+    service, _, _, _, _, _ = build_service()
+    await service.create_topic(TopicCreate(name="Grammar"))
+    vocabulary = await service.create_topic(TopicCreate(name="Vocabulary"))
+
+    with pytest.raises(DuplicateTopicNameError):
+        await service.update_topic(vocabulary.id, TopicUpdate(name="Grammar"))
+
+
+@pytest.mark.asyncio
+async def test_update_topic_allows_keeping_its_own_name() -> None:
+    service, _, _, _, _, _ = build_service()
+    topic = await service.create_topic(TopicCreate(name="Grammar"))
+
+    updated = await service.update_topic(topic.id, TopicUpdate(name="Grammar"))
+
+    assert updated.name == "Grammar"
+
+
+@pytest.mark.asyncio
+async def test_create_challenge_rejects_unknown_topic() -> None:
+    service, _, units, _, _, _ = build_service()
+    lesson_id = await _seed_lesson(service, units)
+
+    payload = ChallengeCreate(
+        lesson_id=lesson_id,
+        type=ChallengeType.SELECT,
+        question="Q1",
+        topic_id="missing-topic",
+        order_index=1,
+        options=[
+            ChallengeOptionCreate(text="A", correct=True, order_index=1),
+            ChallengeOptionCreate(text="B", correct=False, order_index=2),
+        ],
+    )
+
+    with pytest.raises(TopicNotFoundError):
+        await service.create_challenge(payload)
+
+
+@pytest.mark.asyncio
+async def test_create_challenge_persists_topic() -> None:
+    service, _, units, _, _, _ = build_service()
+    lesson_id = await _seed_lesson(service, units)
+    topic = await service.create_topic(TopicCreate(name="Grammar"))
+
+    challenge = await service.create_challenge(
+        ChallengeCreate(
+            lesson_id=lesson_id,
+            type=ChallengeType.SELECT,
+            question="Q1",
+            topic_id=topic.id,
+            order_index=1,
+            options=[
+                ChallengeOptionCreate(text="A", correct=True, order_index=1),
+                ChallengeOptionCreate(text="B", correct=False, order_index=2),
+            ],
+        )
+    )
+
+    assert challenge.topic_id == topic.id
+
+
+@pytest.mark.asyncio
+async def test_update_challenge_rejects_unknown_topic() -> None:
+    service, _, units, _, _, _ = build_service()
+    lesson_id = await _seed_lesson(service, units)
+    challenge = await service.create_challenge(
+        ChallengeCreate(
+            lesson_id=lesson_id,
+            type=ChallengeType.SELECT,
+            question="Q1",
+            order_index=1,
+            options=[
+                ChallengeOptionCreate(text="A", correct=True, order_index=1),
+                ChallengeOptionCreate(text="B", correct=False, order_index=2),
+            ],
+        )
+    )
+
+    with pytest.raises(TopicNotFoundError):
+        await service.update_challenge(challenge.id, ChallengeUpdate(topic_id="missing-topic"))
+
+
+@pytest.mark.asyncio
+async def test_list_challenges_by_topic_requires_existing_topic() -> None:
+    service, _, _, _, _, _ = build_service()
+
+    with pytest.raises(TopicNotFoundError):
+        await service.list_challenges_by_topic("missing-topic")
+
+
+@pytest.mark.asyncio
+async def test_list_challenges_by_topic_filters_other_topics() -> None:
+    service, _, units, _, _, _ = build_service()
+    lesson_id = await _seed_lesson(service, units)
+    grammar = await service.create_topic(TopicCreate(name="Grammar"))
+    vocabulary = await service.create_topic(TopicCreate(name="Vocabulary"))
+
+    async def make_challenge(order_index: int, topic_id: str) -> Challenge:
+        return await service.create_challenge(
+            ChallengeCreate(
+                lesson_id=lesson_id,
+                type=ChallengeType.SELECT,
+                question=f"Q{order_index}",
+                topic_id=topic_id,
+                order_index=order_index,
+                options=[
+                    ChallengeOptionCreate(text="A", correct=True, order_index=1),
+                    ChallengeOptionCreate(text="B", correct=False, order_index=2),
+                ],
+            )
+        )
+
+    grammar_challenge = await make_challenge(1, grammar.id)
+    await make_challenge(2, vocabulary.id)
+
+    result = await service.list_challenges_by_topic(grammar.id)
+
+    assert [c.id for c in result] == [grammar_challenge.id]
+
+
+@pytest.mark.asyncio
+async def test_get_topic_stats_groups_by_topic_and_difficulty() -> None:
+    service, _, units, _, _, _ = build_service()
+    lesson_id = await _seed_lesson(service, units)
+    grammar = await service.create_topic(TopicCreate(name="Grammar"))
+
+    async def make_challenge(
+        order_index: int, topic_id: str | None, difficulty: ChallengeDifficulty
+    ) -> Challenge:
+        return await service.create_challenge(
+            ChallengeCreate(
+                lesson_id=lesson_id,
+                type=ChallengeType.SELECT,
+                question=f"Q{order_index}",
+                topic_id=topic_id,
+                difficulty=difficulty,
+                order_index=order_index,
+                options=[
+                    ChallengeOptionCreate(text="A", correct=True, order_index=1),
+                    ChallengeOptionCreate(text="B", correct=False, order_index=2),
+                ],
+            )
+        )
+
+    await make_challenge(1, grammar.id, ChallengeDifficulty.EASY)
+    await make_challenge(2, grammar.id, ChallengeDifficulty.HARD)
+    await make_challenge(3, None, ChallengeDifficulty.MEDIUM)
+
+    stats = await service.get_topic_stats()
+    by_name = {stat.topic_name: stat for stat in stats}
+
+    assert by_name["Grammar"].total == 2
+    assert by_name["Grammar"].by_difficulty == {"EASY": 1, "MEDIUM": 0, "HARD": 1}
+    assert by_name["Chưa phân loại"].total == 1
+    assert by_name["Chưa phân loại"].by_difficulty == {"EASY": 0, "MEDIUM": 1, "HARD": 0}

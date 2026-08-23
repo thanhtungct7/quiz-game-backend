@@ -25,6 +25,20 @@ class ChallengeRepository:
         result = await self.db.execute(statement)
         return list(result.scalars().all())
 
+    async def list_by_topic(self, topic_id: str) -> list[Challenge]:
+        statement = (
+            select(Challenge)
+            .where(Challenge.topic_id == topic_id)
+            .options(selectinload(Challenge.options))
+        )
+        result = await self.db.execute(statement)
+        return list(result.scalars().all())
+
+    async def list_all(self) -> list[Challenge]:
+        statement = select(Challenge).options(selectinload(Challenge.options))
+        result = await self.db.execute(statement)
+        return list(result.scalars().all())
+
     async def get_by_id(self, challenge_id: str) -> Challenge | None:
         statement = (
             select(Challenge)

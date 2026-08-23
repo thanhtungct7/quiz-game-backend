@@ -16,6 +16,7 @@ from app.repository.course_repository import CourseRepository
 from app.repository.lesson_repository import LessonRepository
 from app.repository.password_reset_token_repository import PasswordResetTokenRepository
 from app.repository.refresh_token_repository import RefreshTokenRepository
+from app.repository.topic_repository import TopicRepository
 from app.repository.unit_repository import UnitRepository
 from app.repository.user_repository import UserRepository
 from app.services.auth_service import AuthService
@@ -85,6 +86,7 @@ def get_course_content_service(db: DatabaseSession) -> CourseContentService:
         lessons=LessonRepository(db),
         challenges=ChallengeRepository(db),
         challenge_options=ChallengeOptionRepository(db),
+        topics=TopicRepository(db),
     )
 
 
