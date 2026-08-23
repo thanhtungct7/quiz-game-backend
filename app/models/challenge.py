@@ -46,8 +46,8 @@ class Challenge(Base):
     difficulty: Mapped[ChallengeDifficulty] = mapped_column(
         Enum(ChallengeDifficulty, name="challenge_difficulty"),
         nullable=False,
-        default=ChallengeDifficulty.MEDIUM,
-        server_default=ChallengeDifficulty.MEDIUM.value,
+        default=ChallengeDifficulty.EASY,
+        server_default=ChallengeDifficulty.EASY.value,
     )
     order_index: Mapped[int] = mapped_column(Integer, nullable=False)
     lesson: Mapped["Lesson"] = relationship("Lesson", back_populates="challenges")
