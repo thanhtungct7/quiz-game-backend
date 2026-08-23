@@ -23,6 +23,7 @@ from app.services.auth_service import AuthService
 from app.services.course_content_service import CourseContentService
 from app.services.email_service import SmtpEmailService
 from app.services.password_reset_service import PasswordResetService
+from app.services.quiz_service import QuizService
 
 bearer_scheme = HTTPBearer(auto_error=False)
 DatabaseSession = Annotated[AsyncSession, Depends(get_db)]
@@ -90,6 +91,14 @@ def get_course_content_service(db: DatabaseSession) -> CourseContentService:
     )
 
 
+def get_quiz_service(db: DatabaseSession) -> QuizService:
+    return QuizService(
+        challenges=ChallengeRepository(db),
+        lessons=LessonRepository(db),
+        units=UnitRepository(db),
+    )
+
+
 AdminUser = Annotated[User, Depends(get_current_admin_user)]
 AuthServiceDependency = Annotated[AuthService, Depends(get_auth_service)]
 PasswordResetServiceDependency = Annotated[
@@ -98,3 +107,4 @@ PasswordResetServiceDependency = Annotated[
 CourseContentServiceDependency = Annotated[
     CourseContentService, Depends(get_course_content_service)
 ]
+QuizServiceDependency = Annotated[QuizService, Depends(get_quiz_service)]

@@ -2,7 +2,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
-from app.models.challenge import Challenge
+from app.models.challenge import Challenge, ChallengeDifficulty
 
 
 class ChallengeRepository:
@@ -22,6 +22,24 @@ class ChallengeRepository:
             .options(selectinload(Challenge.options))
             .order_by(Challenge.order_index)
         )
+        result = await self.db.execute(statement)
+        return list(result.scalars().all())
+
+    async def list_by_lesson_filtered(
+        self,
+        lesson_id: str,
+        topic_ids: list[str] | None = None,
+        difficulties: list[ChallengeDifficulty] | None = None,
+    ) -> list[Challenge]:
+        statement = (
+            select(Challenge)
+            .where(Challenge.lesson_id == lesson_id)
+            .options(selectinload(Challenge.options))
+        )
+        if topic_ids:
+            statement = statement.where(Challenge.topic_id.in_(topic_ids))
+        if difficulties:
+            statement = statement.where(Challenge.difficulty.in_(difficulties))
         result = await self.db.execute(statement)
         return list(result.scalars().all())
 
