@@ -5,7 +5,7 @@ from app.models.challenge import Challenge, ChallengeDifficulty
 from app.repository.challenge_repository import ChallengeRepository
 from app.repository.lesson_repository import LessonRepository
 from app.repository.unit_repository import UnitRepository
-from app.schemas.course_content import ChallengeOptionPublicRead, ChallengePublicRead
+from app.schemas.course_content import ChallengeOptionPublicRead, ChallengePublicRead, PassageRead
 from app.schemas.quiz import QuizSet, StageQuizSet
 
 
@@ -104,5 +104,6 @@ class QuizService:
             difficulty=challenge.difficulty,
             topic_id=challenge.topic_id,
             order_index=challenge.order_index,
+            passage=PassageRead.model_validate(challenge.passage) if challenge.passage else None,
             options=[ChallengeOptionPublicRead.model_validate(option) for option in options],
         )

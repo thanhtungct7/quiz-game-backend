@@ -2,7 +2,7 @@ from enum import StrEnum
 from typing import TYPE_CHECKING
 from uuid import uuid4
 
-from sqlalchemy import Enum, ForeignKey, Integer, String, Text, UniqueConstraint
+from sqlalchemy import ARRAY, Enum, ForeignKey, Integer, String, Text, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db.base import Base
@@ -10,6 +10,7 @@ from app.db.base import Base
 if TYPE_CHECKING:
     from app.models.challenge_option import ChallengeOption
     from app.models.lesson import Lesson
+    from app.models.passage import Passage
     from app.models.topic import Topic
 
 
@@ -56,8 +57,20 @@ class Challenge(Base):
         nullable=True,
         index=True,
     )
+    passage_id: Mapped[str | None] = mapped_column(
+        ForeignKey("passages.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+    source_ref: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
+    correct_text: Mapped[str | None] = mapped_column(Text, nullable=True)
+    tags: Mapped[list[str] | None] = mapped_column(ARRAY(String(50)), nullable=True)
+    cefr_level: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    toeic_band: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    toeic_min_score: Mapped[int | None] = mapped_column(Integer, nullable=True)
     lesson: Mapped["Lesson"] = relationship("Lesson", back_populates="challenges")
     topic: Mapped["Topic | None"] = relationship("Topic", back_populates="challenges")
+    passage: Mapped["Passage | None"] = relationship("Passage", back_populates="challenges")
     options: Mapped[list["ChallengeOption"]] = relationship(
         "ChallengeOption",
         back_populates="challenge",

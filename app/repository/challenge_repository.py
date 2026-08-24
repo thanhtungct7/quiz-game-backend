@@ -12,14 +12,14 @@ class ChallengeRepository:
     async def create(self, challenge: Challenge) -> Challenge:
         self.db.add(challenge)
         await self.db.commit()
-        await self.db.refresh(challenge, attribute_names=["options"])
+        await self.db.refresh(challenge, attribute_names=["options", "passage"])
         return challenge
 
     async def list_by_lesson(self, lesson_id: str) -> list[Challenge]:
         statement = (
             select(Challenge)
             .where(Challenge.lesson_id == lesson_id)
-            .options(selectinload(Challenge.options))
+            .options(selectinload(Challenge.options), selectinload(Challenge.passage))
             .order_by(Challenge.order_index)
         )
         result = await self.db.execute(statement)
@@ -34,7 +34,7 @@ class ChallengeRepository:
         statement = (
             select(Challenge)
             .where(Challenge.lesson_id == lesson_id)
-            .options(selectinload(Challenge.options))
+            .options(selectinload(Challenge.options), selectinload(Challenge.passage))
         )
         if topic_ids:
             statement = statement.where(Challenge.topic_id.in_(topic_ids))
@@ -47,13 +47,15 @@ class ChallengeRepository:
         statement = (
             select(Challenge)
             .where(Challenge.topic_id == topic_id)
-            .options(selectinload(Challenge.options))
+            .options(selectinload(Challenge.options), selectinload(Challenge.passage))
         )
         result = await self.db.execute(statement)
         return list(result.scalars().all())
 
     async def list_all(self) -> list[Challenge]:
-        statement = select(Challenge).options(selectinload(Challenge.options))
+        statement = select(Challenge).options(
+            selectinload(Challenge.options), selectinload(Challenge.passage)
+        )
         result = await self.db.execute(statement)
         return list(result.scalars().all())
 
@@ -61,7 +63,7 @@ class ChallengeRepository:
         statement = (
             select(Challenge)
             .where(Challenge.id == challenge_id)
-            .options(selectinload(Challenge.options))
+            .options(selectinload(Challenge.options), selectinload(Challenge.passage))
         )
         result = await self.db.execute(statement)
         return result.scalar_one_or_none()
@@ -77,7 +79,7 @@ class ChallengeRepository:
         for field, value in data.items():
             setattr(challenge, field, value)
         await self.db.commit()
-        await self.db.refresh(challenge, attribute_names=["options"])
+        await self.db.refresh(challenge, attribute_names=["options", "passage"])
         return challenge
 
     async def delete(self, challenge: Challenge) -> None:

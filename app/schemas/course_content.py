@@ -45,6 +45,16 @@ class ChallengeOptionPublicRead(BaseModel):
     audio_src: str | None
 
 
+# --- Passages --------------------------------------------------------------
+
+
+class PassageRead(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+    id: str
+    content: str
+    level_grade: str | None
+
+
 # --- Challenges ----------------------------------------------------------
 
 
@@ -57,6 +67,11 @@ class ChallengeCreate(BaseModel):
     topic_id: str | None = None
     order_index: int = Field(gt=0)
     options: list[ChallengeOptionCreate] = Field(min_length=2)
+    correct_text: str | None = Field(default=None, max_length=2000)
+    tags: list[str] | None = None
+    cefr_level: str | None = Field(default=None, max_length=20)
+    toeic_band: str | None = Field(default=None, max_length=20)
+    toeic_min_score: int | None = None
 
 
 class ChallengeUpdate(BaseModel):
@@ -66,11 +81,17 @@ class ChallengeUpdate(BaseModel):
     difficulty: ChallengeDifficulty | None = None
     topic_id: str | None = None
     order_index: int | None = Field(default=None, gt=0)
+    correct_text: str | None = Field(default=None, max_length=2000)
+    tags: list[str] | None = None
+    cefr_level: str | None = Field(default=None, max_length=20)
+    toeic_band: str | None = Field(default=None, max_length=20)
+    toeic_min_score: int | None = None
 
 
 class ChallengeRead(BaseModel):
-    """Admin-facing representation. Options include the correct answer and the
-    explanation is visible (both are hidden from ChallengePublicRead)."""
+    """Admin-facing representation. Options include the correct answer, the
+    explanation is visible, and so is the full source metadata (tags/CEFR/
+    TOEIC band) -- all hidden from ChallengePublicRead."""
 
     model_config = ConfigDict(from_attributes=True)
     id: str
@@ -81,7 +102,13 @@ class ChallengeRead(BaseModel):
     difficulty: ChallengeDifficulty
     topic_id: str | None
     order_index: int
+    passage: PassageRead | None
     options: list[ChallengeOptionRead]
+    correct_text: str | None
+    tags: list[str] | None
+    cefr_level: str | None
+    toeic_band: str | None
+    toeic_min_score: int | None
 
 
 class ChallengePublicRead(BaseModel):
@@ -97,6 +124,7 @@ class ChallengePublicRead(BaseModel):
     difficulty: ChallengeDifficulty
     topic_id: str | None
     order_index: int
+    passage: PassageRead | None
     options: list[ChallengeOptionPublicRead]
 
 
