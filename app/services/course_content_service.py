@@ -193,6 +193,11 @@ class CourseContentService:
             topic_id=data.topic_id,
             order_index=data.order_index,
             options=[ChallengeOption(**option.model_dump()) for option in data.options],
+            correct_text=data.correct_text,
+            tags=data.tags,
+            cefr_level=data.cefr_level,
+            toeic_band=data.toeic_band,
+            toeic_min_score=data.toeic_min_score,
         )
         return await self.challenges.create(challenge)
 
