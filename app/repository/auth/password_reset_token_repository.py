@@ -3,7 +3,7 @@ from datetime import datetime
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models.password_reset_token import PasswordResetToken
+from app.models.auth.password_reset_token import PasswordResetToken
 
 
 class PasswordResetTokenRepository:

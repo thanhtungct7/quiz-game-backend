@@ -8,10 +8,10 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 from app.db.base import Base
 
 if TYPE_CHECKING:
-    from app.models.challenge_option import ChallengeOption
-    from app.models.lesson import Lesson
-    from app.models.passage import Passage
-    from app.models.topic import Topic
+    from app.models.content.challenge_option import ChallengeOption
+    from app.models.content.lesson import Lesson
+    from app.models.content.passage import Passage
+    from app.models.content.topic import Topic
 
 
 class ChallengeType(StrEnum):

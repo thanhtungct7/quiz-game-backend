@@ -7,8 +7,8 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 from app.db.base import Base
 
 if TYPE_CHECKING:
-    from app.models.course import Course
-    from app.models.lesson import Lesson
+    from app.models.content.course import Course
+    from app.models.content.lesson import Lesson
 
 class Unit(Base):
     __tablename__ = "units"

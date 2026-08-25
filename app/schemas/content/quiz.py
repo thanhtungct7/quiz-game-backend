@@ -1,7 +1,7 @@
 from pydantic import BaseModel, Field
 
-from app.models.challenge import ChallengeDifficulty
-from app.schemas.course_content import ChallengePublicRead
+from app.models.content.challenge import ChallengeDifficulty
+from app.schemas.content.course_content import ChallengePublicRead
 
 
 class QuizGenerateRequest(BaseModel):

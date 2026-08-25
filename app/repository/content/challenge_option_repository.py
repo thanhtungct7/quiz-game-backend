@@ -1,7 +1,7 @@
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models.challenge_option import ChallengeOption
+from app.models.content.challenge_option import ChallengeOption
 
 
 class ChallengeOptionRepository:

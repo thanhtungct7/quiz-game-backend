@@ -1,7 +1,7 @@
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models.topic import Topic
+from app.models.content.topic import Topic
 
 
 class TopicRepository:

@@ -5,9 +5,9 @@ challenge options and topics. Every route requires an authenticated admin user.
 from fastapi import APIRouter, Response, status
 
 from app.api.dependencies import AdminUser, CourseContentServiceDependency
-from app.api.routes._content_errors import raise_content_http_error
+from app.api.routes.content._content_errors import raise_content_http_error
 from app.core.exceptions import ApplicationError
-from app.schemas.course_content import (
+from app.schemas.content.course_content import (
     ChallengeCreate,
     ChallengeOptionCreate,
     ChallengeOptionRead,

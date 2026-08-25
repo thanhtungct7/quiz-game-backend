@@ -8,13 +8,13 @@ from app.core.exceptions import (
     InvalidChallengeOptionsError,
     TopicNotFoundError,
 )
-from app.models.challenge import Challenge, ChallengeDifficulty, ChallengeType
-from app.models.challenge_option import ChallengeOption
-from app.models.course import Course
-from app.models.lesson import Lesson
-from app.models.topic import Topic
-from app.models.unit import Unit
-from app.schemas.course_content import (
+from app.models.content.challenge import Challenge, ChallengeDifficulty, ChallengeType
+from app.models.content.challenge_option import ChallengeOption
+from app.models.content.course import Course
+from app.models.content.lesson import Lesson
+from app.models.content.topic import Topic
+from app.models.content.unit import Unit
+from app.schemas.content.course_content import (
     ChallengeCreate,
     ChallengeOptionCreate,
     ChallengeOptionUpdate,
@@ -24,7 +24,7 @@ from app.schemas.course_content import (
     TopicUpdate,
     UnitCreate,
 )
-from app.services.course_content_service import CourseContentService
+from app.services.content.course_content_service import CourseContentService
 
 
 class FakeCourseRepository:

@@ -1,6 +1,6 @@
 from pydantic import BaseModel, ConfigDict, Field
 
-from app.models.challenge import ChallengeDifficulty, ChallengeType
+from app.models.content.challenge import ChallengeDifficulty, ChallengeType
 
 # --- Challenge options -------------------------------------------------
 

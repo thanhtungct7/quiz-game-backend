@@ -4,8 +4,8 @@ from pydantic import SecretStr
 from app.core.config import settings
 from app.core.exceptions import EmailAlreadyExistsError
 from app.core.security import verify_password
-from app.models.user import User
-from app.services.admin_bootstrap_service import AdminSeedService, seed_first_admin
+from app.models.auth.user import User
+from app.services.content.admin_bootstrap_service import AdminSeedService, seed_first_admin
 
 
 class FakeUserRepository:

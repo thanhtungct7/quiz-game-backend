@@ -27,13 +27,13 @@ from sqlalchemy import delete, insert, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.session import AsyncSessionFactory, engine
-from app.models.challenge import Challenge, ChallengeDifficulty, ChallengeType
-from app.models.challenge_option import ChallengeOption
-from app.models.course import Course
-from app.models.lesson import Lesson
-from app.models.passage import Passage
-from app.models.topic import Topic
-from app.models.unit import Unit
+from app.models.content.challenge import Challenge, ChallengeDifficulty, ChallengeType
+from app.models.content.challenge_option import ChallengeOption
+from app.models.content.course import Course
+from app.models.content.lesson import Lesson
+from app.models.content.passage import Passage
+from app.models.content.topic import Topic
+from app.models.content.unit import Unit
 
 DATA_DIR = Path(__file__).resolve().parent.parent / "data" / "quiz"
 COURSE_TITLE = "Ngân hàng câu hỏi"

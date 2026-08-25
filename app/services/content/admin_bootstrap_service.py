@@ -3,8 +3,8 @@ import logging
 from app.core.config import settings
 from app.core.exceptions import EmailAlreadyExistsError
 from app.core.security import hash_password
-from app.models.user import User
-from app.repository.user_repository import UserRepository
+from app.models.auth.user import User
+from app.repository.auth.user_repository import UserRepository
 
 logger = logging.getLogger(__name__)
 

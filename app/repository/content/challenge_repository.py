@@ -2,7 +2,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
-from app.models.challenge import Challenge, ChallengeDifficulty
+from app.models.content.challenge import Challenge, ChallengeDifficulty
 
 
 class ChallengeRepository:

@@ -9,19 +9,19 @@ from app.core.exceptions import (
     TopicNotFoundError,
     UnitNotFoundError,
 )
-from app.models.challenge import Challenge, ChallengeType
-from app.models.challenge_option import ChallengeOption
-from app.models.course import Course
-from app.models.lesson import Lesson
-from app.models.topic import Topic
-from app.models.unit import Unit
-from app.repository.challenge_option_repository import ChallengeOptionRepository
-from app.repository.challenge_repository import ChallengeRepository
-from app.repository.course_repository import CourseRepository
-from app.repository.lesson_repository import LessonRepository
-from app.repository.topic_repository import TopicRepository
-from app.repository.unit_repository import UnitRepository
-from app.schemas.course_content import (
+from app.models.content.challenge import Challenge, ChallengeType
+from app.models.content.challenge_option import ChallengeOption
+from app.models.content.course import Course
+from app.models.content.lesson import Lesson
+from app.models.content.topic import Topic
+from app.models.content.unit import Unit
+from app.repository.content.challenge_option_repository import ChallengeOptionRepository
+from app.repository.content.challenge_repository import ChallengeRepository
+from app.repository.content.course_repository import CourseRepository
+from app.repository.content.lesson_repository import LessonRepository
+from app.repository.content.topic_repository import TopicRepository
+from app.repository.content.unit_repository import UnitRepository
+from app.schemas.content.course_content import (
     ChallengeCreate,
     ChallengeOptionCreate,
     ChallengeOptionUpdate,

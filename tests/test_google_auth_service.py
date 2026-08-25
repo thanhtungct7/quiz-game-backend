@@ -5,8 +5,8 @@ from google.auth import exceptions as google_auth_exceptions
 from google.oauth2 import id_token
 
 from app.core.exceptions import GoogleAuthUnavailableError, InvalidGoogleTokenError
-from app.services import google_auth_service as google_auth_service_module
-from app.services.google_auth_service import verify_google_id_token
+from app.services.auth import google_auth_service as google_auth_service_module
+from app.services.auth.google_auth_service import verify_google_id_token
 
 
 async def run_direct(function: Callable[..., object], *args: object) -> object:

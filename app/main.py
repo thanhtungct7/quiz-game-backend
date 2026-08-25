@@ -12,8 +12,8 @@ from app.api.router import api_router
 from app.core.config import settings
 from app.core.logging import configure_logging
 from app.db.session import AsyncSessionFactory, engine
-from app.repository.user_repository import UserRepository
-from app.services.admin_bootstrap_service import AdminSeedService, seed_first_admin
+from app.repository.auth.user_repository import UserRepository
+from app.services.content.admin_bootstrap_service import AdminSeedService, seed_first_admin
 
 configure_logging(settings.debug)
 logger = logging.getLogger(__name__)

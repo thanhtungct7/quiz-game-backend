@@ -3,14 +3,14 @@ from typing import NoReturn
 import pytest
 from fastapi import HTTPException, status
 
-from app.api.routes.auth import google_login
+from app.api.routes.auth.auth import google_login
 from app.core.exceptions import (
     AccountLinkRequiredError,
     GoogleAuthUnavailableError,
     InactiveUserError,
     InvalidGoogleTokenError,
 )
-from app.schemas.auth import GoogleLoginRequest
+from app.schemas.auth.auth import GoogleLoginRequest
 
 
 class FailingGoogleAuthService:

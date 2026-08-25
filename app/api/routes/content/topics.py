@@ -1,7 +1,7 @@
 from fastapi import APIRouter
 
 from app.api.dependencies import CourseContentServiceDependency
-from app.schemas.course_content import TopicRead
+from app.schemas.content.course_content import TopicRead
 
 router = APIRouter()
 

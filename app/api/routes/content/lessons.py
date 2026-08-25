@@ -1,10 +1,10 @@
 from fastapi import APIRouter
 
 from app.api.dependencies import CourseContentServiceDependency, QuizServiceDependency
-from app.api.routes._content_errors import raise_content_http_error
+from app.api.routes.content._content_errors import raise_content_http_error
 from app.core.exceptions import ApplicationError
-from app.schemas.course_content import ChallengePublicRead
-from app.schemas.quiz import QuizGenerateRequest, QuizSet
+from app.schemas.content.course_content import ChallengePublicRead
+from app.schemas.content.quiz import QuizGenerateRequest, QuizSet
 
 router = APIRouter()
 

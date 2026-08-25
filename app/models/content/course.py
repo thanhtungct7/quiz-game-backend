@@ -7,7 +7,7 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 from app.db.base import Base
 
 if TYPE_CHECKING:
-    from app.models.unit import Unit
+    from app.models.content.unit import Unit
 
 class Course(Base):
     __tablename__ = "courses"

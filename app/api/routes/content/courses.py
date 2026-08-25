@@ -1,9 +1,9 @@
 from fastapi import APIRouter
 
 from app.api.dependencies import CourseContentServiceDependency
-from app.api.routes._content_errors import raise_content_http_error
+from app.api.routes.content._content_errors import raise_content_http_error
 from app.core.exceptions import ApplicationError
-from app.schemas.course_content import CourseRead, UnitRead
+from app.schemas.content.course_content import CourseRead, UnitRead
 
 router = APIRouter()
 

@@ -9,11 +9,11 @@ from app.core.security import (
     hash_password,
     hash_password_reset_token,
 )
-from app.models.password_reset_token import PasswordResetToken
-from app.repository.password_reset_token_repository import PasswordResetTokenRepository
-from app.repository.refresh_token_repository import RefreshTokenRepository
-from app.repository.user_repository import UserRepository
-from app.services.email_service import EmailService
+from app.models.auth.password_reset_token import PasswordResetToken
+from app.repository.auth.password_reset_token_repository import PasswordResetTokenRepository
+from app.repository.auth.refresh_token_repository import RefreshTokenRepository
+from app.repository.auth.user_repository import UserRepository
+from app.services.auth.email_service import EmailService
 
 
 class PasswordResetService:

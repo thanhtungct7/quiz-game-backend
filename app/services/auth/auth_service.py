@@ -15,12 +15,12 @@ from app.core.security import (
     hash_refresh_token,
     verify_password,
 )
-from app.models.refresh_token import RefreshToken
-from app.models.user import User
-from app.repository.refresh_token_repository import RefreshTokenRepository
-from app.repository.user_repository import UserRepository
-from app.schemas.auth import TokenResponse
-from app.services.google_auth_service import verify_google_id_token
+from app.models.auth.refresh_token import RefreshToken
+from app.models.auth.user import User
+from app.repository.auth.refresh_token_repository import RefreshTokenRepository
+from app.repository.auth.user_repository import UserRepository
+from app.schemas.auth.auth import TokenResponse
+from app.services.auth.google_auth_service import verify_google_id_token
 
 
 class AuthService:

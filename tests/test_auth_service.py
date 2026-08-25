@@ -9,11 +9,11 @@ from app.core.exceptions import (
     InvalidRefreshTokenError,
 )
 from app.core.security import hash_password, hash_refresh_token
-from app.models.refresh_token import RefreshToken
-from app.models.user import User
-from app.schemas.auth import RegisterRequest
-from app.services import auth_service as auth_service_module
-from app.services.auth_service import AuthService
+from app.models.auth.refresh_token import RefreshToken
+from app.models.auth.user import User
+from app.schemas.auth.auth import RegisterRequest
+from app.services.auth import auth_service as auth_service_module
+from app.services.auth.auth_service import AuthService
 
 
 class FakeUserRepository:

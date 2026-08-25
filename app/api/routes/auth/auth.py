@@ -14,8 +14,8 @@ from app.core.exceptions import (
     InvalidPasswordResetTokenError,
     InvalidRefreshTokenError,
 )
-from app.models.user import User
-from app.schemas.auth import (
+from app.models.auth.user import User
+from app.schemas.auth.auth import (
     ForgotPasswordRequest,
     GoogleLoginRequest,
     LoginRequest,
@@ -24,7 +24,7 @@ from app.schemas.auth import (
     ResetPasswordRequest,
     TokenResponse,
 )
-from app.schemas.user import UserRead
+from app.schemas.auth.user import UserRead
 
 router = APIRouter()
 

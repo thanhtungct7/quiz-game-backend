@@ -1,7 +1,7 @@
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models.unit import Unit
+from app.models.content.unit import Unit
 
 
 class UnitRepository:

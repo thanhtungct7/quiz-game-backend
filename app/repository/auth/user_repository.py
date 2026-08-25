@@ -3,7 +3,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.exceptions import EmailAlreadyExistsError
-from app.models.user import User
+from app.models.auth.user import User
 
 
 class UserRepository:
