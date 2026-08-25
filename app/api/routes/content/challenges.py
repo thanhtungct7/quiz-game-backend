@@ -1,10 +1,14 @@
 from fastapi import APIRouter
 
-from app.api.dependencies import CourseContentServiceDependency, QuizServiceDependency
-from app.api.routes._content_errors import raise_content_http_error
+from app.api.dependencies import (
+    CourseContentServiceDependency,
+    CurrentUser,
+    ProgressServiceDependency,
+)
+from app.api.routes.content._content_errors import raise_content_http_error
 from app.core.exceptions import ApplicationError
-from app.schemas.course_content import ChallengePublicRead
-from app.schemas.quiz import AnswerCheckRequest, AnswerCheckResult
+from app.schemas.content.course_content import ChallengePublicRead
+from app.schemas.content.quiz import AnswerCheckRequest, AnswerCheckResult
 
 router = APIRouter()
 
@@ -22,9 +26,14 @@ async def get_challenge(
 
 @router.post("/{challenge_id}/check", response_model=AnswerCheckResult)
 async def check_answer(
-    challenge_id: str, data: AnswerCheckRequest, service: QuizServiceDependency
+    challenge_id: str,
+    data: AnswerCheckRequest,
+    current_user: CurrentUser,
+    service: ProgressServiceDependency,
 ) -> AnswerCheckResult:
     try:
-        return await service.check_answer(challenge_id, data.selected_option_id)
+        return await service.check_answer(
+            current_user.id, challenge_id, data.selected_option_id
+        )
     except ApplicationError as exc:
         raise_content_http_error(exc)

@@ -1,16 +1,16 @@
 from fastapi import APIRouter
 
-from app.api.routes import (
+from app.api.routes import health
+from app.api.routes.auth import auth, users
+from app.api.routes.content import (
     admin_content,
-    auth,
     challenges,
     courses,
-    health,
     lessons,
     topics,
     units,
-    users,
 )
+from app.api.routes.progress import progress
 
 api_router = APIRouter()
 api_router.include_router(health.router, tags=["health"])
@@ -21,6 +21,7 @@ api_router.include_router(units.router, prefix="/units", tags=["course-content"]
 api_router.include_router(lessons.router, prefix="/lessons", tags=["course-content"])
 api_router.include_router(challenges.router, prefix="/challenges", tags=["course-content"])
 api_router.include_router(topics.router, prefix="/topics", tags=["course-content"])
+api_router.include_router(progress.router, prefix="/progress", tags=["progress"])
 
 api_router.include_router(
     admin_content.courses_router, prefix="/admin/courses", tags=["admin-question-bank"]

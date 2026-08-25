@@ -9,21 +9,23 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.config import settings
 from app.core.security import decode_access_token
 from app.db.session import get_db
-from app.models.user import User
-from app.repository.challenge_option_repository import ChallengeOptionRepository
-from app.repository.challenge_repository import ChallengeRepository
-from app.repository.course_repository import CourseRepository
-from app.repository.lesson_repository import LessonRepository
-from app.repository.password_reset_token_repository import PasswordResetTokenRepository
-from app.repository.refresh_token_repository import RefreshTokenRepository
-from app.repository.topic_repository import TopicRepository
-from app.repository.unit_repository import UnitRepository
-from app.repository.user_repository import UserRepository
-from app.services.auth_service import AuthService
-from app.services.course_content_service import CourseContentService
-from app.services.email_service import SmtpEmailService
-from app.services.password_reset_service import PasswordResetService
-from app.services.quiz_service import QuizService
+from app.models.auth.user import User
+from app.repository.auth.password_reset_token_repository import PasswordResetTokenRepository
+from app.repository.auth.refresh_token_repository import RefreshTokenRepository
+from app.repository.auth.user_repository import UserRepository
+from app.repository.content.challenge_option_repository import ChallengeOptionRepository
+from app.repository.content.challenge_repository import ChallengeRepository
+from app.repository.content.course_repository import CourseRepository
+from app.repository.content.lesson_repository import LessonRepository
+from app.repository.content.topic_repository import TopicRepository
+from app.repository.content.unit_repository import UnitRepository
+from app.repository.progress.user_progress_repository import UserProgressRepository
+from app.services.auth.auth_service import AuthService
+from app.services.auth.email_service import SmtpEmailService
+from app.services.auth.password_reset_service import PasswordResetService
+from app.services.content.course_content_service import CourseContentService
+from app.services.content.quiz_service import QuizService
+from app.services.progress.progress_service import ProgressService
 
 bearer_scheme = HTTPBearer(auto_error=False)
 DatabaseSession = Annotated[AsyncSession, Depends(get_db)]
@@ -99,6 +101,15 @@ def get_quiz_service(db: DatabaseSession) -> QuizService:
     )
 
 
+def get_progress_service(db: DatabaseSession) -> ProgressService:
+    return ProgressService(
+        progress=UserProgressRepository(db),
+        challenges=ChallengeRepository(db),
+        lessons=LessonRepository(db),
+        units=UnitRepository(db),
+    )
+
+
 AdminUser = Annotated[User, Depends(get_current_admin_user)]
 AuthServiceDependency = Annotated[AuthService, Depends(get_auth_service)]
 PasswordResetServiceDependency = Annotated[
@@ -108,3 +119,4 @@ CourseContentServiceDependency = Annotated[
     CourseContentService, Depends(get_course_content_service)
 ]
 QuizServiceDependency = Annotated[QuizService, Depends(get_quiz_service)]
+ProgressServiceDependency = Annotated[ProgressService, Depends(get_progress_service)]

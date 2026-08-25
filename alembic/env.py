@@ -18,6 +18,8 @@ from app.models import (  # noqa: F401
     Topic,
     Unit,
     User,
+    UserChallengeProgress,
+    UserLessonProgress,
 )
 
 config = context.config

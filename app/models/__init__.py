@@ -1,13 +1,15 @@
-from app.models.challenge import Challenge
-from app.models.challenge_option import ChallengeOption
-from app.models.course import Course
-from app.models.lesson import Lesson
-from app.models.passage import Passage
-from app.models.password_reset_token import PasswordResetToken
-from app.models.refresh_token import RefreshToken
-from app.models.topic import Topic
-from app.models.unit import Unit
-from app.models.user import User
+from app.models.auth.password_reset_token import PasswordResetToken
+from app.models.auth.refresh_token import RefreshToken
+from app.models.auth.user import User
+from app.models.content.challenge import Challenge
+from app.models.content.challenge_option import ChallengeOption
+from app.models.content.course import Course
+from app.models.content.lesson import Lesson
+from app.models.content.passage import Passage
+from app.models.content.topic import Topic
+from app.models.content.unit import Unit
+from app.models.progress.user_challenge_progress import UserChallengeProgress
+from app.models.progress.user_lesson_progress import UserLessonProgress
 
 __all__ = [
     "User",
@@ -20,4 +22,6 @@ __all__ = [
     "ChallengeOption",
     "Topic",
     "Passage",
+    "UserChallengeProgress",
+    "UserLessonProgress",
 ]
