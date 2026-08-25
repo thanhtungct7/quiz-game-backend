@@ -1,12 +1,17 @@
 import random
 
-from app.core.exceptions import LessonNotFoundError, UnitNotFoundError
+from app.core.exceptions import (
+    ChallengeNotFoundError,
+    ChallengeOptionNotFoundError,
+    LessonNotFoundError,
+    UnitNotFoundError,
+)
 from app.models.challenge import Challenge, ChallengeDifficulty
 from app.repository.challenge_repository import ChallengeRepository
 from app.repository.lesson_repository import LessonRepository
 from app.repository.unit_repository import UnitRepository
 from app.schemas.course_content import ChallengeOptionPublicRead, ChallengePublicRead, PassageRead
-from app.schemas.quiz import QuizSet, StageQuizSet
+from app.schemas.quiz import AnswerCheckResult, QuizSet, StageQuizSet
 
 
 class QuizService:
@@ -91,6 +96,25 @@ class QuizService:
         selected = rng.sample(pool, min(count, len(pool)))
         rng.shuffle(selected)
         return [self._to_public_read(challenge, rng) for challenge in selected]
+
+    async def check_answer(self, challenge_id: str, selected_option_id: str) -> AnswerCheckResult:
+        challenge = await self.challenges.get_by_id(challenge_id)
+        if challenge is None:
+            raise ChallengeNotFoundError(challenge_id)
+
+        selected = next(
+            (option for option in challenge.options if option.id == selected_option_id), None
+        )
+        if selected is None:
+            raise ChallengeOptionNotFoundError(selected_option_id)
+
+        return AnswerCheckResult(
+            challenge_id=challenge.id,
+            selected_option_id=selected.id,
+            correct=selected.correct,
+            correct_option_ids=[option.id for option in challenge.options if option.correct],
+            explanation=challenge.explanation,
+        )
 
     @staticmethod
     def _to_public_read(challenge: Challenge, rng: random.Random) -> ChallengePublicRead:

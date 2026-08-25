@@ -23,3 +23,15 @@ class StageQuizSet(QuizSet):
     """One QuizSet per Stage (Lesson) within a Unit."""
 
     lesson_title: str
+
+
+class AnswerCheckRequest(BaseModel):
+    selected_option_id: str
+
+
+class AnswerCheckResult(BaseModel):
+    challenge_id: str
+    selected_option_id: str
+    correct: bool
+    correct_option_ids: list[str]
+    explanation: str | None

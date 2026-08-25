@@ -1,6 +1,11 @@
 import pytest
 
-from app.core.exceptions import LessonNotFoundError, UnitNotFoundError
+from app.core.exceptions import (
+    ChallengeNotFoundError,
+    ChallengeOptionNotFoundError,
+    LessonNotFoundError,
+    UnitNotFoundError,
+)
 from app.models.challenge import Challenge, ChallengeDifficulty, ChallengeType
 from app.models.challenge_option import ChallengeOption
 from app.models.lesson import Lesson
@@ -43,6 +48,9 @@ class FakeChallengeRepository:
         if difficulties:
             pool = [c for c in pool if c.difficulty in difficulties]
         return pool
+
+    async def get_by_id(self, challenge_id: str) -> Challenge | None:
+        return next((c for c in self.challenges if c.id == challenge_id), None)
 
 
 def _make_challenge(
@@ -203,3 +211,67 @@ async def test_generate_for_unit_returns_one_stage_set_per_lesson() -> None:
     assert by_lesson["lesson-a"].lesson_title == "Stage A"
     assert by_lesson["lesson-a"].returned_count == 1
     assert by_lesson["lesson-b"].returned_count == 2
+
+
+@pytest.mark.asyncio
+async def test_check_answer_requires_existing_challenge() -> None:
+    service = build_service([], [])
+
+    with pytest.raises(ChallengeNotFoundError):
+        await service.check_answer("missing", "some-option")
+
+
+@pytest.mark.asyncio
+async def test_check_answer_rejects_option_not_on_challenge() -> None:
+    challenge = _make_challenge("c0", "lesson-1")
+    service = build_service([challenge], [])
+
+    with pytest.raises(ChallengeOptionNotFoundError):
+        await service.check_answer("c0", "not-an-option")
+
+
+@pytest.mark.asyncio
+async def test_check_answer_marks_correct_selection() -> None:
+    challenge = _make_challenge("c0", "lesson-1")
+    service = build_service([challenge], [])
+
+    result = await service.check_answer("c0", "c0-a")
+
+    assert result.correct is True
+    assert result.selected_option_id == "c0-a"
+    assert result.correct_option_ids == ["c0-a"]
+
+
+@pytest.mark.asyncio
+async def test_check_answer_marks_incorrect_selection() -> None:
+    challenge = _make_challenge("c0", "lesson-1")
+    service = build_service([challenge], [])
+
+    result = await service.check_answer("c0", "c0-b")
+
+    assert result.correct is False
+    assert result.selected_option_id == "c0-b"
+    assert result.correct_option_ids == ["c0-a"]
+
+
+@pytest.mark.asyncio
+async def test_check_answer_supports_multiple_correct_options() -> None:
+    challenge = Challenge(
+        id="c1",
+        lesson_id="lesson-1",
+        type=ChallengeType.ASSIST,
+        question="Question c1",
+        difficulty=ChallengeDifficulty.EASY,
+        order_index=1,
+        options=[
+            ChallengeOption(id="c1-a", text="A", correct=True, order_index=1),
+            ChallengeOption(id="c1-b", text="B", correct=True, order_index=2),
+            ChallengeOption(id="c1-c", text="C", correct=False, order_index=3),
+        ],
+    )
+    service = build_service([challenge], [])
+
+    result = await service.check_answer("c1", "c1-b")
+
+    assert result.correct is True
+    assert result.correct_option_ids == ["c1-a", "c1-b"]
