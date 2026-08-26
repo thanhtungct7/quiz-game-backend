@@ -1,7 +1,7 @@
 from typing import TYPE_CHECKING
 from uuid import uuid4
 
-from sqlalchemy import ForeignKey, Integer, String, UniqueConstraint
+from sqlalchemy import Boolean, ForeignKey, Integer, String, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db.base import Base
@@ -30,6 +30,18 @@ class Lesson(Base):
         nullable=False, index=True
     )
     order_index: Mapped[int] = mapped_column(Integer, nullable=False)
+    is_bank: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default="false", index=True
+    )
+    """Holdover storage, not a step on the learning path.
+
+    The learning path is made of small lessons (~10 challenges) so a learner can
+    actually finish one. The imported question bank is far larger than the path,
+    so every challenge that does not fit into a path lesson is parked in a
+    ``is_bank=True`` lesson: still reachable by duo matches and practice draws
+    (which sample the whole `challenges` table), but hidden from the course tree
+    so it never shows up as a 69k-question "lesson".
+    """
     unit: Mapped["Unit"] = relationship("Unit", back_populates="lessons")
     challenges: Mapped[list["Challenge"]] = relationship(
         "Challenge", 

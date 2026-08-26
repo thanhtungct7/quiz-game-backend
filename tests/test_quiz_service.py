@@ -30,19 +30,22 @@ class FakeLessonRepository:
 class FakeChallengeRepository:
     def __init__(self, challenges: list[Challenge]) -> None:
         self.challenges = challenges
+        self.last_limit: int | None = None
 
     async def list_by_lesson_filtered(
         self,
         lesson_id: str,
         topic_ids: list[str] | None = None,
         difficulties: list[ChallengeDifficulty] | None = None,
+        limit: int | None = None,
     ) -> list[Challenge]:
         pool = [c for c in self.challenges if c.lesson_id == lesson_id]
         if topic_ids:
             pool = [c for c in pool if c.topic_id in topic_ids]
         if difficulties:
             pool = [c for c in pool if c.difficulty in difficulties]
-        return pool
+        self.last_limit = limit
+        return pool[:limit] if limit is not None else pool
 
     async def get_by_id(self, challenge_id: str) -> Challenge | None:
         return next((c for c in self.challenges if c.id == challenge_id), None)

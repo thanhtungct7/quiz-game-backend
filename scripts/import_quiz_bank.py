@@ -3,6 +3,14 @@
 question-bank schema (Course -> Unit -> Lesson -> Challenge -> ChallengeOption)
 and through QuizService's random-sample generation.
 
+Each source file is one "group". A group is laid out as a stretch of the
+learning path -- a few units, each of `--lessons-per-unit` lessons holding
+`--challenges-per-lesson` questions -- and everything past that budget goes
+into a single `is_bank=True` lesson. Bank lessons are hidden from the course
+tree but still feed duo matches and practice draws, which sample the whole
+`challenges` table. This is what keeps a lesson finishable: the bank holds
+~156k questions, while a lesson holds ten.
+
 Writes directly through SQLAlchemy Core batched inserts instead of
 CourseContentService, whose per-row duplicate-order_index checks are meant
 for the admin API and are too slow for ~156k challenges / ~630k options.
@@ -17,7 +25,7 @@ import argparse
 import asyncio
 import difflib
 import json
-from collections.abc import Iterator
+from collections.abc import Iterable, Iterator
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -38,6 +46,11 @@ from app.models.content.unit import Unit
 DATA_DIR = Path(__file__).resolve().parent.parent / "data" / "quiz"
 COURSE_TITLE = "Ngân hàng câu hỏi"
 BATCH_SIZE = 5000
+BANK_LESSON_TITLE = "Ngân hàng câu hỏi"
+# Roughly Duolingo-sized: ~1000 lessons of ten questions across the whole course.
+DEFAULT_CHALLENGES_PER_LESSON = 10
+DEFAULT_LESSONS_PER_UNIT = 20
+DEFAULT_UNITS_PER_GROUP = 3
 SKIPPED_LOG_PATH = DATA_DIR / "_import_skipped_common_error_corrections.json"
 PUNCT = " .,!?;:\"'"
 
@@ -379,73 +392,172 @@ async def _get_or_create_topics(session: AsyncSession) -> dict[str, str]:
     return topics
 
 
-async def _create_unit_with_pool_lesson(
-    session: AsyncSession, course_id: str, title: str, description: str, order_index: int
-) -> str:
-    unit_id = str(uuid4())
-    lesson_id = str(uuid4())
-    await session.execute(
-        insert(Unit),
-        [
-            {
-                "id": unit_id,
-                "course_id": course_id,
-                "title": title,
-                "description": description,
-                "order_index": order_index,
-            }
-        ],
-    )
-    await session.execute(
-        insert(Lesson), [{"id": lesson_id, "unit_id": unit_id, "title": title, "order_index": 1}]
-    )
-    await session.commit()
-    return lesson_id
+@dataclass(frozen=True)
+class PathLayout:
+    """How much of a source group becomes walkable path, and in what shape."""
+
+    challenges_per_lesson: int = DEFAULT_CHALLENGES_PER_LESSON
+    lessons_per_unit: int = DEFAULT_LESSONS_PER_UNIT
+    units_per_group: int = DEFAULT_UNITS_PER_GROUP
+
+    @property
+    def path_capacity(self) -> int:
+        """Challenges a single group may contribute to the path. Everything the
+        group holds beyond this lands in its bank lesson."""
+        return self.challenges_per_lesson * self.lessons_per_unit * self.units_per_group
 
 
-async def _import_simple_group(
-    session: AsyncSession,
-    transform: Iterator[tuple[dict[str, Any], list[dict[str, Any]]]],
-    lesson_id: str,
-    topic_id: str,
-) -> int:
-    batch = Batch()
-    order_index = 0
+@dataclass
+class GroupStats:
+    units: int = 0
+    path_lessons: int = 0
+    path_challenges: int = 0
+    bank_challenges: int = 0
+    passages: int = 0
+
+    @property
+    def total_challenges(self) -> int:
+        return self.path_challenges + self.bank_challenges
+
+
+# One imported question: challenge fields, its options in display order, and
+# the passage it belongs to (reading comprehension only).
+SourceItem = tuple[dict[str, Any], list[dict[str, Any]], dict[str, Any] | None]
+
+
+def without_passages(
+    transform: Iterable[tuple[dict[str, Any], list[dict[str, Any]]]],
+) -> Iterator[SourceItem]:
     for challenge_fields, option_dicts in transform:
-        order_index += 1
-        challenge_row = {
-            "id": str(uuid4()),
-            "lesson_id": lesson_id,
-            "topic_id": topic_id,
-            "passage_id": None,
-            "order_index": order_index,
-            **challenge_fields,
-        }
-        batch.add(challenge_row, option_dicts)
-        if batch.is_full():
-            await _flush(session, batch)
-    await _flush(session, batch)
-    return order_index
+        yield challenge_fields, option_dicts, None
 
 
-async def _import_reading_group(
-    session: AsyncSession,
-    transform: Iterator[tuple[dict[str, Any], list[dict[str, Any]], dict[str, Any]]],
-    lesson_id: str,
-    topic_id: str,
-) -> tuple[int, int]:
-    batch = Batch()
-    passage_batch: list[dict[str, Any]] = []
-    passage_cache: dict[str, str] = {}
-    order_index = 0
-    passage_count = 0
-    for challenge_fields, option_dicts, passage_info in transform:
+class _GroupWriter:
+    """Streams one source group into path lessons, then into a bank lesson.
+
+    Single pass: units and lessons are created as they fill up, so the caller
+    never has to know a group's size up front. Once `path_capacity` challenges
+    have been placed, everything remaining goes to the bank lesson.
+    """
+
+    def __init__(
+        self,
+        session: AsyncSession,
+        course_id: str,
+        title: str,
+        description: str,
+        topic_id: str,
+        layout: PathLayout,
+        first_unit_order: int,
+    ) -> None:
+        self.session = session
+        self.course_id = course_id
+        self.title = title
+        self.description = description
+        self.topic_id = topic_id
+        self.layout = layout
+        self.next_unit_order = first_unit_order
+
+        self.stats = GroupStats()
+        self.batch = Batch()
+        self.passage_batch: list[dict[str, Any]] = []
+        self.passage_cache: dict[str, str] = {}
+
+        self.unit_ids: list[str] = []
+        self.lesson_id: str | None = None
+        self.lesson_fill = 0
+        self.path_open = True
+        self.bank_lesson_id: str | None = None
+        # Sentinel: no passage seen yet, so the first item is a passage boundary.
+        self.current_passage_ref: str | None = ""
+
+    # --- Structure ----------------------------------------------------------
+
+    async def _create_unit(self) -> str:
+        unit_id = str(uuid4())
+        index = len(self.unit_ids) + 1
+        title = self.title if self.layout.units_per_group == 1 else f"{self.title} · Chặng {index}"
+        await self.session.execute(
+            insert(Unit),
+            [
+                {
+                    "id": unit_id,
+                    "course_id": self.course_id,
+                    "title": title[:100],
+                    "description": self.description,
+                    "order_index": self.next_unit_order,
+                }
+            ],
+        )
+        await self.session.commit()
+        self.unit_ids.append(unit_id)
+        self.next_unit_order += 1
+        self.stats.units += 1
+        return unit_id
+
+    async def _open_path_lesson(self) -> bool:
+        """Start the next path lesson. False once the group's path budget is spent."""
+        if self.stats.path_challenges >= self.layout.path_capacity:
+            return False
+        if self.stats.path_lessons % self.layout.lessons_per_unit == 0:
+            await self._create_unit()
+
+        order_in_unit = self.stats.path_lessons % self.layout.lessons_per_unit + 1
+        lesson_id = str(uuid4())
+        await self.session.execute(
+            insert(Lesson),
+            [
+                {
+                    "id": lesson_id,
+                    "unit_id": self.unit_ids[-1],
+                    "title": f"Cửa {order_in_unit}",
+                    "order_index": order_in_unit,
+                    "is_bank": False,
+                }
+            ],
+        )
+        await self.session.commit()
+        self.lesson_id = lesson_id
+        self.lesson_fill = 0
+        self.stats.path_lessons += 1
+        return True
+
+    async def _open_bank_lesson(self) -> str:
+        """The group's overflow lesson, created on first use.
+
+        It sits in the group's last unit at an order_index past every path
+        lesson, so it can never collide with one.
+        """
+        if self.bank_lesson_id is None:
+            if not self.unit_ids:
+                await self._create_unit()
+            self.bank_lesson_id = str(uuid4())
+            await self.session.execute(
+                insert(Lesson),
+                [
+                    {
+                        "id": self.bank_lesson_id,
+                        "unit_id": self.unit_ids[-1],
+                        "title": BANK_LESSON_TITLE,
+                        "order_index": self.layout.lessons_per_unit + 1,
+                        "is_bank": True,
+                    }
+                ],
+            )
+            await self.session.commit()
+        return self.bank_lesson_id
+
+    # --- Content ------------------------------------------------------------
+
+    def _passage_id(self, passage_info: dict[str, Any] | None) -> str | None:
+        if passage_info is None:
+            return None
         source_ref = passage_info["source_ref"]
-        passage_id = passage_cache.get(source_ref)
+        passage_id = self.passage_cache.get(source_ref)
         if passage_id is None:
             passage_id = str(uuid4())
-            passage_cache[source_ref] = passage_id
-            passage_batch.append(
+            self.passage_cache[source_ref] = passage_id
+            self.passage_batch.append(
                 {
                     "id": passage_id,
                     "source_ref": source_ref,
@@ -453,36 +565,226 @@ async def _import_reading_group(
                     "level_grade": passage_info["level_grade"],
                 }
             )
-            passage_count += 1
+            self.stats.passages += 1
+        return passage_id
 
-        order_index += 1
-        challenge_row = {
-            "id": str(uuid4()),
-            "lesson_id": lesson_id,
-            "topic_id": topic_id,
-            "passage_id": passage_id,
-            "order_index": order_index,
-            **challenge_fields,
-        }
-        batch.add(challenge_row, option_dicts)
-        if batch.is_full():
-            # Every passage referenced by this challenge batch must be
-            # committed first, or the FK insert below fails -- passages
-            # can't be flushed independently on their own size threshold.
-            if passage_batch:
-                await session.execute(insert(Passage), passage_batch)
-                await session.commit()
-                passage_batch = []
-            await _flush(session, batch)
+    async def add(self, item: SourceItem) -> None:
+        challenge_fields, option_dicts, passage_info = item
+        passage_ref = passage_info["source_ref"] if passage_info is not None else None
+        # A reading passage's questions must stay in one lesson, so a lesson can
+        # only roll over at a passage boundary -- which lets a reading lesson run
+        # a little past challenges_per_lesson rather than splitting an article.
+        at_passage_boundary = passage_ref is None or passage_ref != self.current_passage_ref
+        self.current_passage_ref = passage_ref
 
-    if passage_batch:
-        await session.execute(insert(Passage), passage_batch)
-        await session.commit()
-    await _flush(session, batch)
-    return order_index, passage_count
+        needs_lesson = self.lesson_id is None or (
+            self.lesson_fill >= self.layout.challenges_per_lesson and at_passage_boundary
+        )
+        if self.path_open and needs_lesson:
+            self.path_open = await self._open_path_lesson()
+
+        if self.path_open:
+            lesson_id = self.lesson_id
+            self.lesson_fill += 1
+            self.stats.path_challenges += 1
+            order_index = self.lesson_fill
+        else:
+            lesson_id = await self._open_bank_lesson()
+            self.stats.bank_challenges += 1
+            order_index = self.stats.bank_challenges
+
+        self.batch.add(
+            {
+                "id": str(uuid4()),
+                "lesson_id": lesson_id,
+                "topic_id": self.topic_id,
+                "passage_id": self._passage_id(passage_info),
+                "order_index": order_index,
+                **challenge_fields,
+            },
+            option_dicts,
+        )
+        if self.batch.is_full():
+            await self.flush()
+
+    async def flush(self) -> None:
+        # Every passage referenced by this challenge batch must be committed
+        # first, or the FK insert fails -- passages can't be flushed
+        # independently on their own size threshold.
+        if self.passage_batch:
+            await self.session.execute(insert(Passage), self.passage_batch)
+            await self.session.commit()
+            self.passage_batch = []
+        await _flush(self.session, self.batch)
 
 
-async def main(reset: bool) -> None:
+async def import_group(
+    session: AsyncSession,
+    course_id: str,
+    title: str,
+    description: str,
+    topic_id: str,
+    items: Iterable[SourceItem],
+    layout: PathLayout,
+    first_unit_order: int,
+) -> GroupStats:
+    writer = _GroupWriter(
+        session, course_id, title, description, topic_id, layout, first_unit_order
+    )
+    for item in items:
+        await writer.add(item)
+    await writer.flush()
+    return writer.stats
+
+
+@dataclass
+class SourceGroup:
+    """One source file (or one part of one) laid out as its own stretch of path."""
+
+    title: str
+    description: str
+    topic_id: str
+    items: Iterable[SourceItem]
+    label: str = ""
+    extra: str = ""
+
+    def __post_init__(self) -> None:
+        if not self.label:
+            self.label = self.title
+
+
+def _build_groups(topics: dict[str, str], skipped_ids: list[int]) -> list[SourceGroup]:
+    """Every source group in path order, easiest sources first."""
+    groups: list[SourceGroup] = []
+
+    # 1-5: multiple_choice_4options, one group per part_name (A1 -> C2).
+    mc4_by_part: dict[str, list[dict[str, Any]]] = {}
+    for row in load_json("quiz_multiple_choice_4options.json"):
+        mc4_by_part.setdefault(row["part_name"], []).append(row)
+    for part_name in sorted(mc4_by_part, key=lambda p: mc4_by_part[p][0]["part"]):
+        rows = mc4_by_part[part_name]
+        groups.append(
+            SourceGroup(
+                title=f"Ngữ pháp - Điền từ ({part_name})",
+                description=part_name,
+                topic_id=topics[TOPIC_GRAMMAR_FILL],
+                items=without_passages(transform_multiple_choice_4options(rows)),
+                label=part_name,
+            )
+        )
+
+    # 6-7: reading comprehension, split into Middle/High grade groups.
+    reading_rows: list[dict[str, Any]] = []
+    for i in range(1, 6):
+        reading_rows.extend(load_json(f"quiz_reading_comprehension_part{i}.json"))
+    for level_grade, level_label in (("middle", "Middle Grade"), ("high", "High Grade")):
+        rows = [row for row in reading_rows if row["level_grade"] == level_grade]
+        groups.append(
+            SourceGroup(
+                title=f"Đọc hiểu - {level_label}",
+                description=f"Reading comprehension - {level_label}",
+                topic_id=topics[TOPIC_READING],
+                items=transform_reading_comprehension(rows),
+            )
+        )
+
+    # 8-10: sentence builder, one group per part_name.
+    sb_by_part: dict[str, list[dict[str, Any]]] = {}
+    for row in load_json("quiz_sentence_builder.json"):
+        sb_by_part.setdefault(row["part_name"], []).append(row)
+    for part_name, rows in sb_by_part.items():
+        groups.append(
+            SourceGroup(
+                title=f"Ghép câu - {part_name}",
+                description=part_name,
+                topic_id=topics[TOPIC_SENTENCE_BUILDER],
+                items=without_passages(transform_sentence_builder(rows)),
+                label=part_name,
+            )
+        )
+
+    # 11-13: true/false, one group per part_name.
+    tf_by_part: dict[str, list[dict[str, Any]]] = {}
+    for row in load_json("quiz_true_false.json"):
+        tf_by_part.setdefault(row["part_name"], []).append(row)
+    for part_name, rows in tf_by_part.items():
+        groups.append(
+            SourceGroup(
+                title=f"Sửa lỗi Đúng/Sai - {part_name}",
+                description=part_name,
+                topic_id=topics[TOPIC_TRUE_FALSE],
+                items=without_passages(transform_true_false(rows)),
+                label=part_name,
+            )
+        )
+
+    # 14-16: quiz_with_explanations.json (3 sub-kinds).
+    explanations = load_json("quiz_with_explanations.json")
+    groups.append(
+        SourceGroup(
+            title="Ngữ pháp có giải thích",
+            description="Rules Quiz with Explanations",
+            topic_id=topics[TOPIC_EXPLANATIONS],
+            items=without_passages(
+                transform_explanations_mcq(explanations["multiple_choice_quizzes"])
+            ),
+        )
+    )
+    groups.append(
+        SourceGroup(
+            title="Lỗi thường gặp",
+            description="Common Mistakes in English",
+            topic_id=topics[TOPIC_COMMON_ERROR],
+            items=without_passages(
+                transform_common_error_corrections(
+                    explanations["common_error_corrections"], skipped_ids
+                )
+            ),
+        )
+    )
+    groups.append(
+        SourceGroup(
+            title="Tìm lỗi sai",
+            description="Error Identification Rules",
+            topic_id=topics[TOPIC_FIND_ERROR],
+            items=without_passages(
+                transform_grammar_rules_find_error(explanations["grammar_rules_find_error"])
+            ),
+        )
+    )
+    return groups
+
+
+def _print_summary(rows: list[tuple[str, GroupStats]], layout: PathLayout) -> None:
+    print(
+        f"\nImport summary (path: {layout.units_per_group} unit(s) x "
+        f"{layout.lessons_per_unit} lesson(s) x {layout.challenges_per_lesson} question(s) "
+        f"per source group):"
+    )
+    print(f"  {'group':<46}{'units':>6}{'lessons':>9}{'path Q':>9}{'bank Q':>10}")
+    totals = GroupStats()
+    for label, stats in rows:
+        print(
+            f"  {label[:45]:<46}{stats.units:>6}{stats.path_lessons:>9}"
+            f"{stats.path_challenges:>9}{stats.bank_challenges:>10}"
+        )
+        totals.units += stats.units
+        totals.path_lessons += stats.path_lessons
+        totals.path_challenges += stats.path_challenges
+        totals.bank_challenges += stats.bank_challenges
+        totals.passages += stats.passages
+    print(
+        f"  {'TOTAL':<46}{totals.units:>6}{totals.path_lessons:>9}"
+        f"{totals.path_challenges:>9}{totals.bank_challenges:>10}"
+    )
+    print(
+        f"\n  {totals.total_challenges} challenges, {totals.passages} passages. "
+        f"{totals.path_challenges} of them sit on the walkable path; the rest stay in "
+        f"bank lessons, reachable through duo matches and lesson quizzes."
+    )
+
+
+async def main(reset: bool, layout: PathLayout) -> None:
     async with AsyncSessionFactory() as session:
         result = await session.execute(select(Course).where(Course.title == COURSE_TITLE))
         course = result.scalar_one_or_none()
@@ -515,136 +817,32 @@ async def main(reset: bool) -> None:
         )
         await session.commit()
 
-        summary: list[tuple[str, int]] = []
-        order_index = 0
-
-        def next_order() -> int:
-            nonlocal order_index
-            order_index += 1
-            return order_index
-
-        # 1-5: multiple_choice_4options, one unit per part_name
-        mc4_rows = load_json("quiz_multiple_choice_4options.json")
-        mc4_by_part: dict[str, list[dict[str, Any]]] = {}
-        for row in mc4_rows:
-            mc4_by_part.setdefault(row["part_name"], []).append(row)
-        for part_name in sorted(mc4_by_part, key=lambda p: mc4_by_part[p][0]["part"]):
-            rows = mc4_by_part[part_name]
-            lesson_id = await _create_unit_with_pool_lesson(
-                session, course_id, f"Ngữ pháp - Điền từ ({part_name})", part_name, next_order()
-            )
-            count = await _import_simple_group(
-                session,
-                transform_multiple_choice_4options(rows),
-                lesson_id,
-                topics[TOPIC_GRAMMAR_FILL],
-            )
-            summary.append((part_name, count))
-
-        # 6-7: reading comprehension, split into Middle/High grade units
-        reading_rows: list[dict[str, Any]] = []
-        for i in range(1, 6):
-            reading_rows.extend(load_json(f"quiz_reading_comprehension_part{i}.json"))
-        for level_grade, label in (("middle", "Middle Grade"), ("high", "High Grade")):
-            rows = [row for row in reading_rows if row["level_grade"] == level_grade]
-            lesson_id = await _create_unit_with_pool_lesson(
-                session,
-                course_id,
-                f"Đọc hiểu - {label}",
-                f"Reading comprehension - {label}",
-                next_order(),
-            )
-            count, passage_count = await _import_reading_group(
-                session, transform_reading_comprehension(rows), lesson_id, topics[TOPIC_READING]
-            )
-            summary.append((f"Đọc hiểu - {label} ({passage_count} passages)", count))
-
-        # 8-10: sentence builder, one unit per part_name
-        sb_rows = load_json("quiz_sentence_builder.json")
-        sb_by_part: dict[str, list[dict[str, Any]]] = {}
-        for row in sb_rows:
-            sb_by_part.setdefault(row["part_name"], []).append(row)
-        for part_name, rows in sb_by_part.items():
-            lesson_id = await _create_unit_with_pool_lesson(
-                session, course_id, f"Ghép câu - {part_name}", part_name, next_order()
-            )
-            count = await _import_simple_group(
-                session,
-                transform_sentence_builder(rows),
-                lesson_id,
-                topics[TOPIC_SENTENCE_BUILDER],
-            )
-            summary.append((part_name, count))
-
-        # 11-13: true/false, one unit per part_name
-        tf_rows = load_json("quiz_true_false.json")
-        tf_by_part: dict[str, list[dict[str, Any]]] = {}
-        for row in tf_rows:
-            tf_by_part.setdefault(row["part_name"], []).append(row)
-        for part_name, rows in tf_by_part.items():
-            lesson_id = await _create_unit_with_pool_lesson(
-                session,
-                course_id,
-                f"Sửa lỗi Đúng/Sai - {part_name}",
-                part_name,
-                next_order(),
-            )
-            count = await _import_simple_group(
-                session, transform_true_false(rows), lesson_id, topics[TOPIC_TRUE_FALSE]
-            )
-            summary.append((part_name, count))
-
-        # 14-16: quiz_with_explanations.json (3 sub-kinds)
-        explanations = load_json("quiz_with_explanations.json")
-
-        lesson_id = await _create_unit_with_pool_lesson(
-            session,
-            course_id,
-            "Ngữ pháp có giải thích",
-            "Rules Quiz with Explanations",
-            next_order(),
-        )
-        count = await _import_simple_group(
-            session,
-            transform_explanations_mcq(explanations["multiple_choice_quizzes"]),
-            lesson_id,
-            topics[TOPIC_EXPLANATIONS],
-        )
-        summary.append(("Ngữ pháp có giải thích", count))
-
         skipped_ids: list[int] = []
-        lesson_id = await _create_unit_with_pool_lesson(
-            session, course_id, "Lỗi thường gặp", "Common Mistakes in English", next_order()
-        )
-        count = await _import_simple_group(
-            session,
-            transform_common_error_corrections(
-                explanations["common_error_corrections"], skipped_ids
-            ),
-            lesson_id,
-            topics[TOPIC_COMMON_ERROR],
-        )
-        summary.append((f"Lỗi thường gặp ({len(skipped_ids)} skipped)", count))
+        summary: list[tuple[str, GroupStats]] = []
+        next_unit_order = 1
+
+        for group in _build_groups(topics, skipped_ids):
+            stats = await import_group(
+                session,
+                course_id,
+                group.title,
+                group.description,
+                group.topic_id,
+                group.items,
+                layout,
+                next_unit_order,
+            )
+            next_unit_order += stats.units
+            label = group.label
+            if stats.passages:
+                label = f"{label} ({stats.passages} passages)"
+            summary.append((label, stats))
+            print(f"  imported {label}: {stats.total_challenges} challenges")
+
         if skipped_ids:
             SKIPPED_LOG_PATH.write_text(json.dumps(skipped_ids, indent=2), encoding="utf-8")
 
-        lesson_id = await _create_unit_with_pool_lesson(
-            session, course_id, "Tìm lỗi sai", "Error Identification Rules", next_order()
-        )
-        count = await _import_simple_group(
-            session,
-            transform_grammar_rules_find_error(explanations["grammar_rules_find_error"]),
-            lesson_id,
-            topics[TOPIC_FIND_ERROR],
-        )
-        summary.append(("Tìm lỗi sai", count))
-
-        print("\nImport summary:")
-        total = 0
-        for label, count in summary:
-            print(f"  {label}: {count}")
-            total += count
-        print(f"  TOTAL: {total}")
+        _print_summary(summary, layout)
         if skipped_ids:
             print(
                 f"\n{len(skipped_ids)} common_error_corrections rows skipped "
@@ -661,5 +859,35 @@ if __name__ == "__main__":
         action="store_true",
         help="Delete the existing 'Ngân hàng câu hỏi' course (if any) and reimport from scratch.",
     )
+    parser.add_argument(
+        "--challenges-per-lesson",
+        type=int,
+        default=DEFAULT_CHALLENGES_PER_LESSON,
+        help="Questions in one path lesson (default: %(default)s).",
+    )
+    parser.add_argument(
+        "--lessons-per-unit",
+        type=int,
+        default=DEFAULT_LESSONS_PER_UNIT,
+        help="Path lessons in one unit (default: %(default)s).",
+    )
+    parser.add_argument(
+        "--units-per-group",
+        type=int,
+        default=DEFAULT_UNITS_PER_GROUP,
+        help=(
+            "Units one source file contributes to the path; everything past that "
+            "goes to its bank lesson (default: %(default)s)."
+        ),
+    )
     args = parser.parse_args()
-    asyncio.run(main(reset=args.reset))
+    asyncio.run(
+        main(
+            reset=args.reset,
+            layout=PathLayout(
+                challenges_per_lesson=args.challenges_per_lesson,
+                lessons_per_unit=args.lessons_per_unit,
+                units_per_group=args.units_per_group,
+            ),
+        )
+    )

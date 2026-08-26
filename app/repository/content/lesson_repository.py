@@ -2,6 +2,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.content.lesson import Lesson
+from app.models.content.unit import Unit
 
 
 class LessonRepository:
@@ -14,8 +15,27 @@ class LessonRepository:
         await self.db.refresh(lesson)
         return lesson
 
-    async def list_by_unit(self, unit_id: str) -> list[Lesson]:
-        statement = select(Lesson).where(Lesson.unit_id == unit_id).order_by(Lesson.order_index)
+    async def list_by_unit(self, unit_id: str, *, include_bank: bool = False) -> list[Lesson]:
+        """Lessons of one unit. Bank lessons are excluded unless asked for -- they
+        are storage for leftover imported questions, not steps on the path."""
+        statement = select(Lesson).where(Lesson.unit_id == unit_id)
+        if not include_bank:
+            statement = statement.where(Lesson.is_bank.is_(False))
+        result = await self.db.execute(statement.order_by(Lesson.order_index))
+        return list(result.scalars().all())
+
+    async def list_path_by_course(self, course_id: str) -> list[Lesson]:
+        """Every non-bank lesson of a course in path order, in one query.
+
+        Feeds the course-tree endpoint, which replaces the client's old
+        one-request-per-unit walk.
+        """
+        statement = (
+            select(Lesson)
+            .join(Unit, Lesson.unit_id == Unit.id)
+            .where(Unit.course_id == course_id, Lesson.is_bank.is_(False))
+            .order_by(Unit.order_index, Lesson.order_index)
+        )
         result = await self.db.execute(statement)
         return list(result.scalars().all())
 
