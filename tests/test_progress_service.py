@@ -3,11 +3,13 @@ import pytest
 from app.core.exceptions import (
     ChallengeNotFoundError,
     ChallengeOptionNotFoundError,
+    CourseNotFoundError,
     LessonNotFoundError,
     UnitNotFoundError,
 )
 from app.models.content.challenge import Challenge, ChallengeDifficulty, ChallengeType
 from app.models.content.challenge_option import ChallengeOption
+from app.models.content.course import Course
 from app.models.content.lesson import Lesson
 from app.models.content.unit import Unit
 from app.models.progress.user_challenge_progress import UserChallengeProgress
@@ -25,6 +27,16 @@ class FakeChallengeRepository:
     async def list_by_lesson(self, lesson_id: str) -> list[Challenge]:
         return [c for c in self.challenges if c.lesson_id == lesson_id]
 
+    async def count_by_lesson(self, lesson_id: str) -> int:
+        return sum(1 for c in self.challenges if c.lesson_id == lesson_id)
+
+    async def count_by_lessons(self, lesson_ids: list[str]) -> dict[str, int]:
+        counts: dict[str, int] = {}
+        for challenge in self.challenges:
+            if challenge.lesson_id in lesson_ids:
+                counts[challenge.lesson_id] = counts.get(challenge.lesson_id, 0) + 1
+        return counts
+
 
 class FakeLessonRepository:
     def __init__(self, lessons: list[Lesson]) -> None:
@@ -33,10 +45,24 @@ class FakeLessonRepository:
     async def get_by_id(self, lesson_id: str) -> Lesson | None:
         return self.lessons.get(lesson_id)
 
-    async def list_by_unit(self, unit_id: str) -> list[Lesson]:
+    async def list_by_unit(self, unit_id: str, *, include_bank: bool = False) -> list[Lesson]:
         return sorted(
-            (lesson for lesson in self.lessons.values() if lesson.unit_id == unit_id),
+            (
+                lesson
+                for lesson in self.lessons.values()
+                if lesson.unit_id == unit_id and (include_bank or not lesson.is_bank)
+            ),
             key=lambda lesson: lesson.order_index,
+        )
+
+    async def list_path_by_course(self, course_id: str) -> list[Lesson]:
+        return sorted(
+            (
+                lesson
+                for lesson in self.lessons.values()
+                if lesson.unit.course_id == course_id and not lesson.is_bank
+            ),
+            key=lambda lesson: (lesson.unit.order_index, lesson.order_index),
         )
 
 
@@ -46,6 +72,14 @@ class FakeUnitRepository:
 
     async def get_by_id(self, unit_id: str) -> Unit | None:
         return self.units.get(unit_id)
+
+
+class FakeCourseRepository:
+    def __init__(self, courses: list[Course]) -> None:
+        self.courses = {course.id: course for course in courses}
+
+    async def get_by_id(self, course_id: str) -> Course | None:
+        return self.courses.get(course_id)
 
 
 class FakeUserProgressRepository:
@@ -142,6 +176,7 @@ def build_service(
     challenges: list[Challenge],
     lessons: list[Lesson] | None = None,
     units: list[Unit] | None = None,
+    courses: list[Course] | None = None,
 ) -> tuple[ProgressService, FakeUserProgressRepository]:
     progress_repo = FakeUserProgressRepository()
     service = ProgressService(
@@ -149,6 +184,7 @@ def build_service(
         challenges=FakeChallengeRepository(challenges),  # type: ignore[arg-type]
         lessons=FakeLessonRepository(lessons or []),  # type: ignore[arg-type]
         units=FakeUnitRepository(units or []),  # type: ignore[arg-type]
+        courses=FakeCourseRepository(courses or []),  # type: ignore[arg-type]
     )
     return service, progress_repo
 
@@ -289,3 +325,58 @@ async def test_get_unit_progress_requires_existing_unit() -> None:
 
     with pytest.raises(UnitNotFoundError):
         await service.get_unit_progress("user-1", "missing")
+
+
+@pytest.mark.asyncio
+async def test_get_unit_progress_skips_bank_lessons() -> None:
+    unit = Unit(id="unit-1", course_id="course-1", title="Unit 1", description="d", order_index=1)
+    path = Lesson(id="lesson-a", unit_id=unit.id, title="Cửa 1", order_index=1, is_bank=False)
+    bank = Lesson(id="lesson-bank", unit_id=unit.id, title="Bank", order_index=21, is_bank=True)
+    service, _ = build_service(
+        [_make_challenge("ca", path.id), _make_challenge("cb", bank.id)],
+        [path, bank],
+        [unit],
+    )
+
+    result = await service.get_unit_progress("user-1", unit.id)
+
+    assert [row.lesson_id for row in result.lessons] == [path.id]
+
+
+@pytest.mark.asyncio
+async def test_get_course_progress_covers_every_path_lesson_in_one_call() -> None:
+    course = Course(id="course-1", title="English", image_src="/en.svg")
+    unit_one = Unit(
+        id="unit-1", course_id=course.id, title="Unit 1", description="d", order_index=1
+    )
+    unit_two = Unit(
+        id="unit-2", course_id=course.id, title="Unit 2", description="d", order_index=2
+    )
+    lesson_a = Lesson(id="lesson-a", unit_id=unit_one.id, title="A", order_index=1)
+    lesson_b = Lesson(id="lesson-b", unit_id=unit_two.id, title="B", order_index=1)
+    bank = Lesson(id="lesson-bank", unit_id=unit_two.id, title="Bank", order_index=21, is_bank=True)
+    lesson_a.unit, lesson_b.unit, bank.unit = unit_one, unit_two, unit_two
+    service, _ = build_service(
+        [_make_challenge("ca", lesson_a.id), _make_challenge("cb", lesson_b.id)],
+        [lesson_a, lesson_b, bank],
+        [unit_one, unit_two],
+        [course],
+    )
+
+    await service.check_answer("user-1", "ca", "ca-a")
+    result = await service.get_course_progress("user-1", course.id)
+
+    assert result.course_id == course.id
+    # Course-tree order, bank lesson left out.
+    assert [row.lesson_id for row in result.lessons] == [lesson_a.id, lesson_b.id]
+    assert result.lessons[0].status == LessonProgressStatus.COMPLETED
+    assert result.lessons[1].status == LessonProgressStatus.NOT_STARTED
+    assert result.lessons[1].total_challenge_count == 1
+
+
+@pytest.mark.asyncio
+async def test_get_course_progress_requires_existing_course() -> None:
+    service, _ = build_service([])
+
+    with pytest.raises(CourseNotFoundError):
+        await service.get_course_progress("user-1", "missing")

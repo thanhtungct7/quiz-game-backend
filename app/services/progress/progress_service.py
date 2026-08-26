@@ -3,6 +3,7 @@ from datetime import UTC, datetime
 from app.core.exceptions import (
     ChallengeNotFoundError,
     ChallengeOptionNotFoundError,
+    CourseNotFoundError,
     LessonNotFoundError,
     UnitNotFoundError,
 )
@@ -10,11 +11,16 @@ from app.models.content.challenge_option import ChallengeOption
 from app.models.progress.user_challenge_progress import UserChallengeProgress
 from app.models.progress.user_lesson_progress import LessonProgressStatus, UserLessonProgress
 from app.repository.content.challenge_repository import ChallengeRepository
+from app.repository.content.course_repository import CourseRepository
 from app.repository.content.lesson_repository import LessonRepository
 from app.repository.content.unit_repository import UnitRepository
 from app.repository.progress.user_progress_repository import UserProgressRepository
 from app.schemas.content.quiz import AnswerCheckResult
-from app.schemas.progress.progress import LessonProgressRead, UnitProgressRead
+from app.schemas.progress.progress import (
+    CourseProgressRead,
+    LessonProgressRead,
+    UnitProgressRead,
+)
 
 
 class ProgressService:
@@ -24,11 +30,13 @@ class ProgressService:
         challenges: ChallengeRepository,
         lessons: LessonRepository,
         units: UnitRepository,
+        courses: CourseRepository,
     ) -> None:
         self.progress = progress
         self.challenges = challenges
         self.lessons = lessons
         self.units = units
+        self.courses = courses
 
     async def check_answer(
         self, user_id: str, challenge_id: str, selected_option_id: str
@@ -61,7 +69,7 @@ class ProgressService:
 
         progress = await self.progress.get_lesson_progress(user_id, lesson_id)
         if progress is None:
-            total = len(await self.challenges.list_by_lesson(lesson_id))
+            total = await self.challenges.count_by_lesson(lesson_id)
             return LessonProgressRead(
                 lesson_id=lesson_id,
                 status=LessonProgressStatus.NOT_STARTED,
@@ -77,29 +85,50 @@ class ProgressService:
             raise UnitNotFoundError(unit_id)
 
         lessons = await self.lessons.list_by_unit(unit_id)
-        rows = await self.progress.list_lesson_progress(
-            user_id, [lesson.id for lesson in lessons]
-        )
+        results = await self._lesson_progress_for(user_id, [lesson.id for lesson in lessons])
+        return UnitProgressRead(unit_id=unit_id, lessons=results)
+
+    async def get_course_progress(self, user_id: str, course_id: str) -> CourseProgressRead:
+        """Every path lesson's progress for one course, in one round trip.
+
+        The client used to ask per unit, which meant one request per unit on
+        every app launch. Pairs with GET /courses/{id}/tree.
+        """
+        course = await self.courses.get_by_id(course_id)
+        if course is None:
+            raise CourseNotFoundError(course_id)
+
+        lessons = await self.lessons.list_path_by_course(course_id)
+        results = await self._lesson_progress_for(user_id, [lesson.id for lesson in lessons])
+        return CourseProgressRead(course_id=course_id, lessons=results)
+
+    async def _lesson_progress_for(
+        self, user_id: str, lesson_ids: list[str]
+    ) -> list[LessonProgressRead]:
+        """Stored progress rows where they exist, synthesised NOT_STARTED rows
+        otherwise -- using two bulk queries rather than one per lesson."""
+        rows = await self.progress.list_lesson_progress(user_id, lesson_ids)
         rows_by_lesson_id = {row.lesson_id: row for row in rows}
 
+        missing = [lesson_id for lesson_id in lesson_ids if lesson_id not in rows_by_lesson_id]
+        totals = await self.challenges.count_by_lessons(missing)
+
         results: list[LessonProgressRead] = []
-        for lesson in lessons:
-            row = rows_by_lesson_id.get(lesson.id)
+        for lesson_id in lesson_ids:
+            row = rows_by_lesson_id.get(lesson_id)
             if row is None:
-                total = len(await self.challenges.list_by_lesson(lesson.id))
                 results.append(
                     LessonProgressRead(
-                        lesson_id=lesson.id,
+                        lesson_id=lesson_id,
                         status=LessonProgressStatus.NOT_STARTED,
                         correct_challenge_count=0,
-                        total_challenge_count=total,
+                        total_challenge_count=totals.get(lesson_id, 0),
                         completed_at=None,
                     )
                 )
             else:
                 results.append(LessonProgressRead.model_validate(row))
-
-        return UnitProgressRead(unit_id=unit_id, lessons=results)
+        return results
 
     async def _record_attempt(
         self, user_id: str, challenge_id: str, lesson_id: str, selected: ChallengeOption
@@ -132,7 +161,7 @@ class ProgressService:
     async def _recompute_lesson_progress(
         self, user_id: str, lesson_id: str
     ) -> UserLessonProgress:
-        total = len(await self.challenges.list_by_lesson(lesson_id))
+        total = await self.challenges.count_by_lesson(lesson_id)
         mastered = await self.progress.count_mastered_challenges(user_id, lesson_id)
         attempted = await self.progress.count_attempted_challenges(user_id, lesson_id)
 

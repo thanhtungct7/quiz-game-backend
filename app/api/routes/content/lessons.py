@@ -1,4 +1,6 @@
-from fastapi import APIRouter
+from typing import Annotated
+
+from fastapi import APIRouter, Query
 
 from app.api.dependencies import CourseContentServiceDependency, QuizServiceDependency
 from app.api.routes.content._content_errors import raise_content_http_error
@@ -8,12 +10,20 @@ from app.schemas.content.quiz import QuizGenerateRequest, QuizSet
 
 router = APIRouter()
 
+MAX_CHALLENGES_PER_PAGE = 100
+
 
 @router.get("/{lesson_id}/challenges", response_model=list[ChallengePublicRead])
 async def list_challenges(
-    lesson_id: str, service: CourseContentServiceDependency
+    lesson_id: str,
+    service: CourseContentServiceDependency,
+    limit: Annotated[int, Query(gt=0, le=MAX_CHALLENGES_PER_PAGE)] = MAX_CHALLENGES_PER_PAGE,
+    offset: Annotated[int, Query(ge=0)] = 0,
 ) -> list[ChallengePublicRead]:
-    challenges = await service.list_challenges(lesson_id)
+    """Always paged. Path lessons are small enough that the default page covers
+    them whole, but bank lessons hold tens of thousands of challenges and must
+    never be serialised in one response."""
+    challenges = await service.list_challenges(lesson_id, limit=limit, offset=offset)
     return [ChallengePublicRead.model_validate(challenge) for challenge in challenges]
 
 

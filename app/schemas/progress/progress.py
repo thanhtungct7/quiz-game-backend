@@ -18,3 +18,10 @@ class LessonProgressRead(BaseModel):
 class UnitProgressRead(BaseModel):
     unit_id: str
     lessons: list[LessonProgressRead]
+
+
+class CourseProgressRead(BaseModel):
+    """Progress for every path lesson of a course, in course-tree order."""
+
+    course_id: str
+    lessons: list[LessonProgressRead]

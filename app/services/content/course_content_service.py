@@ -27,13 +27,16 @@ from app.schemas.content.course_content import (
     ChallengeOptionUpdate,
     ChallengeUpdate,
     CourseCreate,
+    CourseTreeRead,
     CourseUpdate,
     LessonCreate,
+    LessonTreeRead,
     LessonUpdate,
     TopicCreate,
     TopicStats,
     TopicUpdate,
     UnitCreate,
+    UnitTreeRead,
     UnitUpdate,
 )
 
@@ -95,6 +98,42 @@ class CourseContentService:
     async def delete_course(self, course_id: str) -> None:
         course = await self.get_course(course_id)
         await self.courses.delete(course)
+
+    async def get_course_tree(self, course_id: str) -> CourseTreeRead:
+        """The full learn path for a course in three queries, regardless of how
+        many units it has. Bank lessons are left out -- they are storage for
+        surplus imported questions, not steps on the path."""
+        course = await self.get_course(course_id)
+        units = await self.units.list_by_course(course_id)
+        lessons = await self.lessons.list_path_by_course(course_id)
+        counts = await self.challenges.count_by_lessons([lesson.id for lesson in lessons])
+
+        lessons_by_unit: dict[str, list[LessonTreeRead]] = {}
+        for lesson in lessons:
+            lessons_by_unit.setdefault(lesson.unit_id, []).append(
+                LessonTreeRead(
+                    id=lesson.id,
+                    title=lesson.title,
+                    order_index=lesson.order_index,
+                    challenge_count=counts.get(lesson.id, 0),
+                )
+            )
+
+        return CourseTreeRead(
+            id=course.id,
+            title=course.title,
+            image_src=course.image_src,
+            units=[
+                UnitTreeRead(
+                    id=unit.id,
+                    title=unit.title,
+                    description=unit.description,
+                    order_index=unit.order_index,
+                    lessons=lessons_by_unit.get(unit.id, []),
+                )
+                for unit in units
+            ],
+        )
 
     # --- Units -------------------------------------------------------------
 
@@ -201,8 +240,10 @@ class CourseContentService:
         )
         return await self.challenges.create(challenge)
 
-    async def list_challenges(self, lesson_id: str) -> list[Challenge]:
-        return await self.challenges.list_by_lesson(lesson_id)
+    async def list_challenges(
+        self, lesson_id: str, *, limit: int | None = None, offset: int = 0
+    ) -> list[Challenge]:
+        return await self.challenges.list_by_lesson(lesson_id, limit=limit, offset=offset)
 
     async def get_challenge(self, challenge_id: str) -> Challenge:
         challenge = await self.challenges.get_by_id(challenge_id)

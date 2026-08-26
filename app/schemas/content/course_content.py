@@ -148,6 +148,7 @@ class LessonRead(BaseModel):
     unit_id: str
     title: str
     order_index: int
+    is_bank: bool = False
 
 
 # --- Units -------------------------------------------------------------
@@ -193,6 +194,40 @@ class CourseRead(BaseModel):
     id: str
     title: str
     image_src: str
+
+
+# --- Course tree -----------------------------------------------------------
+
+
+class LessonTreeRead(BaseModel):
+    """A path lesson as it appears on the learn screen. `challenge_count` lets
+    the client show lesson length without fetching the challenges."""
+
+    id: str
+    title: str
+    order_index: int
+    challenge_count: int
+
+
+class UnitTreeRead(BaseModel):
+    id: str
+    title: str
+    description: str
+    order_index: int
+    lessons: list[LessonTreeRead]
+
+
+class CourseTreeRead(BaseModel):
+    """The whole learn path -- course, units and path lessons -- in one payload.
+
+    Replaces the client's 1 + 1 + N walk over /courses, /courses/{id}/units and
+    /units/{id}/lessons. Bank lessons are excluded.
+    """
+
+    id: str
+    title: str
+    image_src: str
+    units: list[UnitTreeRead]
 
 
 # --- Topics ----------------------------------------------------------------

@@ -90,8 +90,22 @@ class FakeLessonRepository:
         self.lessons[lesson.id] = lesson
         return lesson
 
-    async def list_by_unit(self, unit_id: str) -> list[Lesson]:
-        return [lesson for lesson in self.lessons.values() if lesson.unit_id == unit_id]
+    async def list_by_unit(self, unit_id: str, *, include_bank: bool = False) -> list[Lesson]:
+        return [
+            lesson
+            for lesson in self.lessons.values()
+            if lesson.unit_id == unit_id and (include_bank or not lesson.is_bank)
+        ]
+
+    async def list_path_by_course(self, course_id: str) -> list[Lesson]:
+        return sorted(
+            (
+                lesson
+                for lesson in self.lessons.values()
+                if lesson.unit.course_id == course_id and not lesson.is_bank
+            ),
+            key=lambda lesson: (lesson.unit.order_index, lesson.order_index),
+        )
 
     async def get_by_id(self, lesson_id: str) -> Lesson | None:
         return self.lessons.get(lesson_id)
@@ -128,8 +142,18 @@ class FakeChallengeRepository:
         self.challenges[challenge.id] = challenge
         return challenge
 
-    async def list_by_lesson(self, lesson_id: str) -> list[Challenge]:
-        return [c for c in self.challenges.values() if c.lesson_id == lesson_id]
+    async def list_by_lesson(
+        self, lesson_id: str, *, limit: int | None = None, offset: int = 0
+    ) -> list[Challenge]:
+        pool = [c for c in self.challenges.values() if c.lesson_id == lesson_id]
+        return pool[offset : offset + limit] if limit is not None else pool[offset:]
+
+    async def count_by_lessons(self, lesson_ids: list[str]) -> dict[str, int]:
+        counts: dict[str, int] = {}
+        for challenge in self.challenges.values():
+            if challenge.lesson_id in lesson_ids:
+                counts[challenge.lesson_id] = counts.get(challenge.lesson_id, 0) + 1
+        return counts
 
     async def list_by_topic(self, topic_id: str) -> list[Challenge]:
         return [c for c in self.challenges.values() if c.topic_id == topic_id]
@@ -694,3 +718,89 @@ async def test_get_topic_stats_groups_by_topic_and_difficulty() -> None:
     assert by_name["Grammar"].by_difficulty == {"EASY": 1, "MEDIUM": 0, "HARD": 1}
     assert by_name["Chưa phân loại"].total == 1
     assert by_name["Chưa phân loại"].by_difficulty == {"EASY": 0, "MEDIUM": 1, "HARD": 0}
+
+
+async def _seed_tree(
+    service: CourseContentService, units: FakeUnitRepository
+) -> tuple[Course, Unit, Lesson, Lesson]:
+    """A course with one unit holding a path lesson and a bank lesson.
+
+    `unit` is wired onto each Lesson by hand: these fakes hold detached ORM
+    objects, so SQLAlchemy never populates the relationship for them.
+    """
+    course = await service.courses.create(
+        Course(id="course-1", title="English", image_src="/en.svg")
+    )
+    unit = await units.create(
+        Unit(id="unit-1", course_id=course.id, title="Unit 1", description="d", order_index=1)
+    )
+    path = await service.lessons.create(
+        Lesson(id="lesson-1", unit_id=unit.id, title="Cửa 1", order_index=1, is_bank=False)
+    )
+    bank = await service.lessons.create(
+        Lesson(id="lesson-bank", unit_id=unit.id, title="Bank", order_index=21, is_bank=True)
+    )
+    path.unit = unit
+    bank.unit = unit
+    return course, unit, path, bank
+
+
+async def _add_challenge(
+    service: CourseContentService, lesson_id: str, order_index: int
+) -> Challenge:
+    return await service.create_challenge(
+        ChallengeCreate(
+            lesson_id=lesson_id,
+            type=ChallengeType.SELECT,
+            question=f"Q{order_index}",
+            order_index=order_index,
+            options=[
+                ChallengeOptionCreate(text="A", correct=True, order_index=1),
+                ChallengeOptionCreate(text="B", correct=False, order_index=2),
+            ],
+        )
+    )
+
+
+@pytest.mark.asyncio
+async def test_get_course_tree_omits_bank_lessons_and_counts_challenges() -> None:
+    service, _, units, _, _, _ = build_service()
+    course, unit, path, bank = await _seed_tree(service, units)
+    await _add_challenge(service, path.id, 1)
+    await _add_challenge(service, path.id, 2)
+    await _add_challenge(service, bank.id, 1)
+
+    tree = await service.get_course_tree(course.id)
+
+    assert tree.id == course.id
+    assert [u.id for u in tree.units] == [unit.id]
+    assert [lesson.id for lesson in tree.units[0].lessons] == [path.id]
+    assert tree.units[0].lessons[0].challenge_count == 2
+
+
+@pytest.mark.asyncio
+async def test_get_course_tree_requires_existing_course() -> None:
+    service, _, _, _, _, _ = build_service()
+
+    with pytest.raises(CourseNotFoundError):
+        await service.get_course_tree("missing")
+
+
+@pytest.mark.asyncio
+async def test_list_lessons_hides_bank_lessons() -> None:
+    service, _, units, _, _, _ = build_service()
+    _, unit, path, _ = await _seed_tree(service, units)
+
+    assert [lesson.id for lesson in await service.list_lessons(unit.id)] == [path.id]
+
+
+@pytest.mark.asyncio
+async def test_list_challenges_pages_the_lesson() -> None:
+    service, _, units, _, _, _ = build_service()
+    _, _, path, _ = await _seed_tree(service, units)
+    for order_index in range(1, 6):
+        await _add_challenge(service, path.id, order_index)
+
+    page = await service.list_challenges(path.id, limit=2, offset=1)
+
+    assert [challenge.question for challenge in page] == ["Q2", "Q3"]
