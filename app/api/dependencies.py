@@ -1,14 +1,14 @@
 from typing import Annotated
 
 import jwt
-from fastapi import Depends, HTTPException, status
+from fastapi import Depends, HTTPException, Query, WebSocketException, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
 from app.core.security import decode_access_token
-from app.db.session import get_db
+from app.db.session import AsyncSessionFactory, get_db
 from app.models.auth.user import User
 from app.repository.auth.password_reset_token_repository import PasswordResetTokenRepository
 from app.repository.auth.refresh_token_repository import RefreshTokenRepository
@@ -19,12 +19,15 @@ from app.repository.content.course_repository import CourseRepository
 from app.repository.content.lesson_repository import LessonRepository
 from app.repository.content.topic_repository import TopicRepository
 from app.repository.content.unit_repository import UnitRepository
+from app.repository.duo.duo_match_repository import DuoMatchRepository
+from app.repository.duo.duo_rating_repository import DuoRatingRepository
 from app.repository.progress.user_progress_repository import UserProgressRepository
 from app.services.auth.auth_service import AuthService
 from app.services.auth.email_service import SmtpEmailService
 from app.services.auth.password_reset_service import PasswordResetService
 from app.services.content.course_content_service import CourseContentService
 from app.services.content.quiz_service import QuizService
+from app.services.duo.duo_service import DuoService
 from app.services.progress.progress_service import ProgressService
 
 bearer_scheme = HTTPBearer(auto_error=False)
@@ -55,6 +58,38 @@ async def get_current_user(
 
 
 CurrentUser = Annotated[User, Depends(get_current_user)]
+
+
+async def get_current_user_ws(
+    token: Annotated[str | None, Query()] = None,
+) -> User:
+    """Authenticate a WebSocket handshake from a `?token=` query parameter.
+
+    `HTTPBearer` is unusable here because a WebSocket handshake cannot carry an
+    Authorization header from most clients. The session is opened and closed
+    inside this function rather than injected: a duo socket stays open for the
+    length of a match and must not hold a transaction for that long.
+    """
+    unauthorized = WebSocketException(
+        code=status.WS_1008_POLICY_VIOLATION, reason="Invalid or expired credentials"
+    )
+    if not token:
+        raise unauthorized
+
+    try:
+        user_id = decode_access_token(token)
+    except jwt.InvalidTokenError as exc:
+        raise unauthorized from exc
+
+    async with AsyncSessionFactory() as db:
+        user = await db.scalar(select(User).where(User.id == user_id))
+
+    if user is None or not user.is_active:
+        raise unauthorized
+    return user
+
+
+CurrentWebSocketUser = Annotated[User, Depends(get_current_user_ws)]
 
 
 async def get_current_admin_user(current_user: CurrentUser) -> User:
@@ -107,6 +142,15 @@ def get_progress_service(db: DatabaseSession) -> ProgressService:
         challenges=ChallengeRepository(db),
         lessons=LessonRepository(db),
         units=UnitRepository(db),
+        courses=CourseRepository(db),
+    )
+
+
+def get_duo_service(db: DatabaseSession) -> DuoService:
+    return DuoService(
+        matches=DuoMatchRepository(db),
+        ratings=DuoRatingRepository(db),
+        challenges=ChallengeRepository(db),
     )
 
 
@@ -120,3 +164,4 @@ CourseContentServiceDependency = Annotated[
 ]
 QuizServiceDependency = Annotated[QuizService, Depends(get_quiz_service)]
 ProgressServiceDependency = Annotated[ProgressService, Depends(get_progress_service)]
+DuoServiceDependency = Annotated[DuoService, Depends(get_duo_service)]

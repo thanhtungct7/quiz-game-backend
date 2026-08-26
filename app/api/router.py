@@ -10,6 +10,7 @@ from app.api.routes.content import (
     topics,
     units,
 )
+from app.api.routes.duo import duo, duo_ws
 from app.api.routes.progress import progress
 
 api_router = APIRouter()
@@ -22,6 +23,8 @@ api_router.include_router(lessons.router, prefix="/lessons", tags=["course-conte
 api_router.include_router(challenges.router, prefix="/challenges", tags=["course-content"])
 api_router.include_router(topics.router, prefix="/topics", tags=["course-content"])
 api_router.include_router(progress.router, prefix="/progress", tags=["progress"])
+api_router.include_router(duo.router, prefix="/duo", tags=["duo"])
+api_router.include_router(duo_ws.router, prefix="/duo", tags=["duo"])
 
 api_router.include_router(
     admin_content.courses_router, prefix="/admin/courses", tags=["admin-question-bank"]

@@ -25,6 +25,18 @@ class StageQuizSet(QuizSet):
     lesson_title: str
 
 
+class QuizSetWithAnswers(BaseModel):
+    """A drawn question set plus its answer key.
+
+    The key is kept server-side (duo matches grade answers in memory without a
+    round trip to the database), so this must never be returned from a route.
+    """
+
+    questions: list[ChallengePublicRead]
+    answer_key: dict[str, list[str]]
+    explanations: dict[str, str | None]
+
+
 class AnswerCheckRequest(BaseModel):
     selected_option_id: str
 

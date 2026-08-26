@@ -10,7 +10,7 @@ from app.schemas.content.course_content import (
     ChallengePublicRead,
     PassageRead,
 )
-from app.schemas.content.quiz import QuizSet, StageQuizSet
+from app.schemas.content.quiz import QuizSet, QuizSetWithAnswers, StageQuizSet
 
 
 class QuizService:
@@ -78,6 +78,40 @@ class QuizService:
             )
         return stage_sets
 
+    async def generate_for_duo(
+        self,
+        count: int,
+        topic_ids: list[str] | None = None,
+        difficulties: list[ChallengeDifficulty] | None = None,
+        seed: int | None = None,
+    ) -> QuizSetWithAnswers:
+        """Draw one question set shared by both players of a duo match.
+
+        Returns the public questions alongside the answer key so the match
+        runtime can grade in memory. Challenges with no correct option are
+        dropped rather than served as unanswerable rounds.
+        """
+        rng = random.Random(seed)  # noqa: S311 -- shuffling quiz questions, not security-sensitive
+        # Over-fetch so dropping malformed challenges still leaves enough rounds.
+        pool = await self.challenges.list_random_filtered(count * 3, topic_ids, difficulties)
+
+        questions: list[ChallengePublicRead] = []
+        answer_key: dict[str, list[str]] = {}
+        explanations: dict[str, str | None] = {}
+        for challenge in pool:
+            if len(questions) == count:
+                break
+            correct_ids = [option.id for option in challenge.options if option.correct]
+            if not correct_ids:
+                continue
+            questions.append(self._to_public_read(challenge, rng))
+            answer_key[challenge.id] = correct_ids
+            explanations[challenge.id] = challenge.explanation
+
+        return QuizSetWithAnswers(
+            questions=questions, answer_key=answer_key, explanations=explanations
+        )
+
     async def _draw_questions(
         self,
         lesson_id: str,
@@ -87,7 +121,12 @@ class QuizService:
         exclude_ids: list[str] | None,
         rng: random.Random,
     ) -> list[ChallengePublicRead]:
-        pool = await self.challenges.list_by_lesson_filtered(lesson_id, topic_ids, difficulties)
+        # Over-fetch so excludes still leave enough to draw from, but stay bounded:
+        # a bank lesson holds tens of thousands of challenges.
+        pool_limit = count * 5 + len(exclude_ids or ())
+        pool = await self.challenges.list_by_lesson_filtered(
+            lesson_id, topic_ids, difficulties, limit=pool_limit
+        )
         if exclude_ids:
             excluded = set(exclude_ids)
             pool = [challenge for challenge in pool if challenge.id not in excluded]

@@ -1,0 +1,140 @@
+"""The single WebSocket endpoint that carries a whole duo match.
+
+Every inbound frame is `{"type": ..., "data": {...}}` and is validated against
+a Pydantic model before the engine sees it, so a malformed or hostile client
+gets an `error` frame instead of reaching the match state.
+"""
+
+import logging
+
+from fastapi import APIRouter, WebSocket, WebSocketDisconnect
+from pydantic import BaseModel, ValidationError
+
+from app.api.dependencies import CurrentWebSocketUser
+from app.models.auth.user import User
+from app.schemas.duo.duo import DuoSettingsRequest
+from app.schemas.duo.events import (
+    AnswerSubmitPayload,
+    ChatSendPayload,
+    ClientEnvelope,
+    ClientEvent,
+    ErrorCode,
+    ErrorData,
+    QueueJoinPayload,
+    RoomCreatePayload,
+    RoomJoinPayload,
+    ServerEvent,
+    envelope,
+)
+from app.services.duo.match_runtime import engine
+from app.services.duo.state import MatchSettings
+
+logger = logging.getLogger(__name__)
+
+router = APIRouter()
+
+
+@router.websocket("/ws")
+async def duo_websocket(websocket: WebSocket, user: CurrentWebSocketUser) -> None:
+    await websocket.accept()
+    await engine.on_connect(user, websocket)
+    try:
+        while True:
+            raw = await websocket.receive_text()
+            await _dispatch(user, websocket, raw)
+    except WebSocketDisconnect:
+        pass
+    finally:
+        await engine.on_disconnect(user.id, websocket)
+
+
+async def _dispatch(user: User, websocket: WebSocket, raw: str) -> None:
+    try:
+        message = ClientEnvelope.model_validate_json(raw)
+    except ValidationError:
+        await _error(websocket, ErrorCode.INVALID_PAYLOAD, "Malformed message")
+        return
+
+    try:
+        event = ClientEvent(message.type)
+    except ValueError:
+        await _error(websocket, ErrorCode.UNKNOWN_EVENT, f"Unknown event {message.type!r}")
+        return
+
+    match event:
+        case ClientEvent.QUEUE_JOIN:
+            payload = _parse(QueueJoinPayload, message.data)
+            if payload is None:
+                await _invalid(websocket)
+                return
+            await engine.join_queue(user, websocket, _to_settings(payload))
+
+        case ClientEvent.QUEUE_LEAVE:
+            await engine.leave_queue(user.id, websocket)
+
+        case ClientEvent.ROOM_CREATE:
+            room_payload = _parse(RoomCreatePayload, message.data)
+            if room_payload is None:
+                await _invalid(websocket)
+                return
+            await engine.create_room(user, websocket, _to_settings(room_payload))
+
+        case ClientEvent.ROOM_JOIN:
+            join_payload = _parse(RoomJoinPayload, message.data)
+            if join_payload is None:
+                await _invalid(websocket)
+                return
+            await engine.join_room(user, websocket, join_payload.room_code.upper())
+
+        case ClientEvent.MATCH_START:
+            await engine.start_match(user.id, websocket)
+
+        case ClientEvent.ANSWER_SUBMIT:
+            answer = _parse(AnswerSubmitPayload, message.data)
+            if answer is None:
+                await _invalid(websocket)
+                return
+            await engine.submit_answer(
+                user.id, websocket, answer.round_index, answer.option_id
+            )
+
+        case ClientEvent.MATCH_LEAVE:
+            await engine.leave_match(user.id)
+
+        case ClientEvent.CHAT_SEND:
+            chat = _parse(ChatSendPayload, message.data)
+            if chat is None:
+                await _invalid(websocket)
+                return
+            await engine.send_chat(user.id, websocket, chat.message.strip())
+
+        case ClientEvent.PING:
+            await websocket.send_json(envelope(ServerEvent.PONG, None))
+
+
+def _to_settings(payload: DuoSettingsRequest) -> MatchSettings:
+    # Topics are sorted so two players who picked the same set in a different
+    # order still count as wanting the same match.
+    return MatchSettings(
+        question_count=payload.question_count,
+        time_per_question=payload.time_per_question,
+        topic_ids=tuple(sorted(payload.topic_ids or ())),
+        difficulty=payload.difficulty,
+    )
+
+
+def _parse[T: BaseModel](model: type[T], data: dict[str, object]) -> T | None:
+    try:
+        return model.model_validate(data)
+    except ValidationError:
+        return None
+
+
+async def _invalid(websocket: WebSocket) -> None:
+    await _error(websocket, ErrorCode.INVALID_PAYLOAD, "Invalid payload for this event")
+
+
+async def _error(websocket: WebSocket, code: ErrorCode, message: str) -> None:
+    await websocket.send_json(
+        envelope(ServerEvent.ERROR, ErrorData(code=code, message=message))
+    )

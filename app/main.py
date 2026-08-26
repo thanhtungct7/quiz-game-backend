@@ -1,3 +1,5 @@
+import asyncio
+import contextlib
 import logging
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
@@ -14,6 +16,8 @@ from app.core.logging import configure_logging
 from app.db.session import AsyncSessionFactory, engine
 from app.repository.auth.user_repository import UserRepository
 from app.services.content.admin_bootstrap_service import AdminSeedService, seed_first_admin
+from app.services.duo.housekeeping import abandon_orphaned_matches, run_housekeeping
+from app.services.duo.match_runtime import engine as duo_engine
 
 configure_logging(settings.debug)
 logger = logging.getLogger(__name__)
@@ -24,7 +28,20 @@ async def lifespan(_: FastAPI) -> AsyncIterator[None]:
     logger.info("Starting %s in %s mode", settings.app_name, settings.environment)
     async with AsyncSessionFactory() as db:
         await seed_first_admin(AdminSeedService(UserRepository(db)))
+
+    # Duo match state lives in this process, so anything left IN_PROGRESS
+    # belongs to a previous run and can never be resumed.
+    orphaned = await abandon_orphaned_matches()
+    if orphaned:
+        logger.info("Closed %d duo match(es) orphaned by a previous run", orphaned)
+    housekeeping = asyncio.create_task(run_housekeeping())
+
     yield
+
+    housekeeping.cancel()
+    with contextlib.suppress(asyncio.CancelledError):
+        await housekeeping
+    await duo_engine.shutdown()
     await engine.dispose()
     logger.info("Application stopped")
 
@@ -63,7 +80,9 @@ async def add_security_headers(request: Request, call_next):  # type: ignore[no-
     response.headers["X-Content-Type-Options"] = "nosniff"
     response.headers["X-Frame-Options"] = "DENY"
     response.headers["Referrer-Policy"] = "no-referrer"
-    response.headers["Cache-Control"] = "no-store"
+    # no-store by default, but never override a route that opted into caching:
+    # the public course-content endpoints serve ETag-revalidated responses.
+    response.headers.setdefault("Cache-Control", "no-store")
     return response
 
 

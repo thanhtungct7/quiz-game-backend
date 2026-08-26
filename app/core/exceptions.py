@@ -71,3 +71,15 @@ class TopicNotFoundError(ApplicationError):
 
 class DuplicateTopicNameError(ApplicationError):
     """Raised when a topic name is already in use."""
+
+
+class DuoMatchNotFoundError(ApplicationError):
+    """Raised when a duo match cannot be found."""
+
+
+class DuoRoomNotFoundError(ApplicationError):
+    """Raised when no live room is waiting behind a room code."""
+
+
+class NotMatchMemberError(ApplicationError):
+    """Raised when a user reads a duo match they did not play in."""

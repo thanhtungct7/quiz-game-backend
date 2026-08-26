@@ -8,6 +8,9 @@ from app.models.content.lesson import Lesson
 from app.models.content.passage import Passage
 from app.models.content.topic import Topic
 from app.models.content.unit import Unit
+from app.models.duo.duo_match import DuoMatch
+from app.models.duo.duo_match_round import DuoMatchRound
+from app.models.duo.duo_rating import DuoRating
 from app.models.progress.user_challenge_progress import UserChallengeProgress
 from app.models.progress.user_lesson_progress import UserLessonProgress
 
@@ -24,4 +27,7 @@ __all__ = [
     "Passage",
     "UserChallengeProgress",
     "UserLessonProgress",
+    "DuoMatch",
+    "DuoMatchRound",
+    "DuoRating",
 ]
