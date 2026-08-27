@@ -35,6 +35,8 @@ async def abandon_orphaned_matches() -> int:
 
 
 async def sweep(engine: DuoEngine | None = None) -> None:
+    """One cleanup pass: time out stale queue entries, then close any
+    waiting room nobody has joined for too long."""
     active = engine or default_engine
     registry = active.registry
 

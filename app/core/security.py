@@ -20,6 +20,8 @@ def verify_password(password: str, hashed_password: str) -> bool:
 
 
 def create_access_token(subject: str, expires_delta: timedelta | None = None) -> str:
+    """Sign a short-lived JWT carrying the user id as `sub`. Self-contained
+    and stateless — verified by signature alone, no database lookup."""
     now = datetime.now(UTC)
     expire = now + (expires_delta or timedelta(minutes=settings.access_token_expire_minutes))
     payload: dict[str, Any] = {
@@ -36,6 +38,12 @@ def create_access_token(subject: str, expires_delta: timedelta | None = None) ->
 
 
 def decode_access_token(token: str) -> str:
+    """Verify signature and required claims, and return the subject (user id).
+
+    Explicitly requires `type == "access"` so a refresh token — which is a
+    random opaque string, not a JWT, but this guards the type confusion in
+    general — can never be replayed here as an access token.
+    """
     payload = jwt.decode(
         token,
         settings.secret_key.get_secret_value(),
@@ -49,6 +57,9 @@ def decode_access_token(token: str) -> str:
 
 
 def create_refresh_token() -> str:
+    """Opaque, high-entropy random token — unlike the access token, this is
+    only meaningful looked up by its hash in the database, so it can be
+    revoked."""
     return secrets.token_urlsafe(48)
 
 

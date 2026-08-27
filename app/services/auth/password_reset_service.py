@@ -32,13 +32,19 @@ class PasswordResetService:
         self.email_service = email_service
 
     async def request_password_reset(self, email: str) -> None:
+        """Email a reset link if the address matches a resettable account.
+
+        Always returns silently for an unknown, inactive, or Google-only
+        account — the caller must not be able to tell which case it was,
+        or this endpoint becomes an email enumeration oracle.
+        """
         user = await self.users.get_user_by_email(email)
 
         if (
             user is None
             or not user.is_active
             or user.hashed_password is None
-        ): 
+        ):
             return
         now = datetime.now(UTC)
         raw_token = create_password_reset_token()
@@ -56,6 +62,9 @@ class PasswordResetService:
         )
 
     async def reset_password(self, token: str, new_password: str) -> None:
+        """Consume a one-time reset token to set a new password and sign
+        the user out everywhere, so a leaked session can't survive a reset
+        the account owner triggered because they suspected a compromise."""
         now = datetime.now(UTC)
         token_hash = hash_password_reset_token(token)
         reset_token = await self.reset_tokens.get_by_hash_for_update(token_hash)

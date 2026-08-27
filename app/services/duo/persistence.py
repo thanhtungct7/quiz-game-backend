@@ -62,6 +62,7 @@ class DuoPersistence(Protocol):
 
 
 def elo_score(outcome: MatchOutcome) -> float:
+    """Map a match outcome to the 1/0.5/0 score the Elo formula expects."""
     if outcome is MatchOutcome.WIN:
         return elo.WIN
     if outcome is MatchOutcome.LOSE:
@@ -116,6 +117,13 @@ class DatabaseDuoPersistence:
     async def save_result(
         self, match: LiveMatch, result: MatchResult
     ) -> dict[str, RatingChange]:
+        """Finalize a match row: apply rating changes, mark it FINISHED with
+        the final scores, and write out every round played.
+
+        Runs as one session so the match record and its rounds are written
+        atomically; rating updates happen first so their result can be
+        embedded in the same response.
+        """
         player_ids = match.player_ids
         one_id = player_ids[0]
         two_id = player_ids[1] if len(player_ids) > 1 else None
@@ -173,6 +181,11 @@ class DatabaseDuoPersistence:
         match: LiveMatch,
         result: MatchResult,
     ) -> dict[str, RatingChange]:
+        """Run the Elo update for both players and persist their new ratings/streaks.
+
+        A match that never got a second player (e.g. an abandoned room) has
+        nothing to rate, so it returns an empty change set.
+        """
         player_ids = match.player_ids
         if len(player_ids) < 2:
             return {}

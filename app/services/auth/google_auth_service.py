@@ -13,6 +13,8 @@ _GOOGLE_ISSUERS = {"accounts.google.com", "https://accounts.google.com"}
 
 
 def _verify_token(id_token_str: str) -> Mapping[str, Any]:
+    """Blocking signature/audience check against Google's public keys — run
+    off the event loop by the async wrapper below."""
     claims: Mapping[str, Any] = id_token.verify_oauth2_token(  # type: ignore[no-untyped-call]
         id_token_str,
         requests.Request(),
@@ -22,6 +24,9 @@ def _verify_token(id_token_str: str) -> Mapping[str, Any]:
 
 
 async def verify_google_id_token(id_token_str: str) -> Mapping[str, Any]:
+    """Validate a Google ID token end to end: signature/audience via the
+    Google SDK, then issuer, verified-email, subject and email shape by
+    hand, since the SDK checks the token's authenticity but not its content."""
     try:
         claims: Mapping[str, Any] = await run_in_threadpool(
             _verify_token,

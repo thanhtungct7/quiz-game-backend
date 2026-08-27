@@ -33,6 +33,8 @@ class QuizService:
         exclude_ids: list[str] | None = None,
         seed: int | None = None,
     ) -> QuizSet:
+        """One shuffled quiz for a single lesson, filtered by topic/difficulty
+        and optionally excluding challenges already seen."""
         lesson = await self.lessons.get_by_id(lesson_id)
         if lesson is None:
             raise LessonNotFoundError(lesson_id)
@@ -57,6 +59,8 @@ class QuizService:
         exclude_ids: list[str] | None = None,
         seed: int | None = None,
     ) -> list[StageQuizSet]:
+        """One quiz set per lesson in the unit, sharing a single RNG so a
+        given seed reproduces the whole unit's draw deterministically."""
         unit = await self.units.get_by_id(unit_id)
         if unit is None:
             raise UnitNotFoundError(unit_id)
@@ -121,6 +125,8 @@ class QuizService:
         exclude_ids: list[str] | None,
         rng: random.Random,
     ) -> list[ChallengePublicRead]:
+        """Sample `count` distinct challenges for one lesson and shuffle
+        both the question order and each question's options."""
         # Over-fetch so excludes still leave enough to draw from, but stay bounded:
         # a bank lesson holds tens of thousands of challenges.
         pool_limit = count * 5 + len(exclude_ids or ())
@@ -137,6 +143,8 @@ class QuizService:
 
     @staticmethod
     def _to_public_read(challenge: Challenge, rng: random.Random) -> ChallengePublicRead:
+        """Client-facing view of a challenge with options shuffled and,
+        crucially, no `correct` flags — the answer key stays server-side."""
         options = list(challenge.options)
         rng.shuffle(options)
         return ChallengePublicRead(

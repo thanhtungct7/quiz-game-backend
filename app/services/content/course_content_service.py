@@ -45,6 +45,8 @@ _UNASSIGNED_TOPIC_NAME = "Chưa phân loại"
 
 
 def _validate_correct_flags(challenge_type: ChallengeType, correct_flags: list[bool]) -> None:
+    """Enforce the per-type answer shape: every challenge needs at least one
+    correct option, and SELECT (single-choice) needs exactly one."""
     correct_count = sum(1 for flag in correct_flags if flag)
     if correct_count == 0:
         raise InvalidChallengeOptionsError("At least one option must be correct")
@@ -55,6 +57,8 @@ def _validate_correct_flags(challenge_type: ChallengeType, correct_flags: list[b
 
 
 def _validate_unique_option_orders(order_indexes: list[int]) -> None:
+    """Option display order must be unambiguous, so no two options may
+    share the same order_index within a challenge."""
     if len(order_indexes) != len(set(order_indexes)):
         raise DuplicateOrderIndexError("Challenge options must have unique order_index values")
 
@@ -210,6 +214,9 @@ class CourseContentService:
     # --- Challenges --------------------------------------------------------
 
     async def create_challenge(self, data: ChallengeCreate) -> Challenge:
+        """Create a challenge with its options, after checking that the
+        parent lesson/topic exist, the order slot is free, and the answer
+        shape is valid for the challenge type."""
         await self.get_lesson(data.lesson_id)
         if data.topic_id is not None:
             await self.get_topic(data.topic_id)
@@ -252,6 +259,9 @@ class CourseContentService:
         return challenge
 
     async def update_challenge(self, challenge_id: str, data: ChallengeUpdate) -> Challenge:
+        """Patch a challenge; re-validates the answer shape only when the
+        type itself changes, since existing options were already valid for
+        the old type and a type switch can invalidate that."""
         challenge = await self.get_challenge(challenge_id)
         updates = data.model_dump(exclude_unset=True)
 
@@ -312,6 +322,9 @@ class CourseContentService:
     async def update_challenge_option(
         self, option_id: str, data: ChallengeOptionUpdate
     ) -> ChallengeOption:
+        """Patch one option; when `correct` changes, re-validates the whole
+        sibling set (not just this option) so the challenge can't end up
+        with zero, or more than one, correct answer for a SELECT type."""
         option = await self.get_challenge_option(option_id)
         updates = data.model_dump(exclude_unset=True)
         siblings: list[ChallengeOption] | None = None
@@ -340,6 +353,8 @@ class CourseContentService:
         return await self.challenge_options.update(option, updates)
 
     async def delete_challenge_option(self, option_id: str) -> None:
+        """Delete an option, refusing if it would leave fewer than two
+        options or break the challenge's correct-answer requirement."""
         option = await self.get_challenge_option(option_id)
         challenge = await self.get_challenge(option.challenge_id)
         siblings = await self.challenge_options.list_by_challenge(option.challenge_id)

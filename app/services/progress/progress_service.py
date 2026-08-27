@@ -41,6 +41,9 @@ class ProgressService:
     async def check_answer(
         self, user_id: str, challenge_id: str, selected_option_id: str
     ) -> AnswerCheckResult:
+        """Grade one solo-mode answer server-side, record the attempt, and
+        roll the lesson's progress forward before telling the client the
+        result — correctness is never trusted from the request."""
         challenge = await self.challenges.get_by_id(challenge_id)
         if challenge is None:
             raise ChallengeNotFoundError(challenge_id)
@@ -133,6 +136,12 @@ class ProgressService:
     async def _record_attempt(
         self, user_id: str, challenge_id: str, lesson_id: str, selected: ChallengeOption
     ) -> UserChallengeProgress:
+        """Upsert one challenge's attempt row.
+
+        `mastered` only ever flips false→true, never back — a later wrong
+        answer bumps the attempt count but does not un-master a challenge
+        the user already got right once.
+        """
         now = datetime.now(UTC)
         existing = await self.progress.get_challenge_progress(user_id, challenge_id)
         if existing is None:
@@ -161,6 +170,9 @@ class ProgressService:
     async def _recompute_lesson_progress(
         self, user_id: str, lesson_id: str
     ) -> UserLessonProgress:
+        """Recompute a lesson's status from scratch off the current mastered
+        and attempted counts. `completed_at` is set once and never cleared,
+        so re-attempting challenges in a finished lesson can't un-complete it."""
         total = await self.challenges.count_by_lesson(lesson_id)
         mastered = await self.progress.count_mastered_challenges(user_id, lesson_id)
         attempted = await self.progress.count_attempted_challenges(user_id, lesson_id)

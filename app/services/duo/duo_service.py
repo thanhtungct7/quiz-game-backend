@@ -48,6 +48,8 @@ class DuoService:
     async def list_history(
         self, user_id: str, limit: int, offset: int
     ) -> list[DuoMatchSummary]:
+        """Paged list of the user's finished/cancelled matches, newest first,
+        each paired with the opponent's profile and current rating."""
         records = await self.matches.list_for_user(user_id, limit, offset)
         opponent_ids = [
             opponent_id
@@ -59,6 +61,12 @@ class DuoService:
         return [_to_summary(record, user_id, opponents, ratings) for record in records]
 
     async def get_match(self, user_id: str, match_id: str) -> DuoMatchDetail:
+        """Full round-by-round breakdown of one match.
+
+        Only a player who took part may view it — anyone else gets
+        NotMatchMemberError, not just a 404, so the two failure cases stay
+        distinguishable.
+        """
         record = await self.matches.get_with_rounds(match_id)
         if record is None:
             raise DuoMatchNotFoundError(match_id)
@@ -87,6 +95,8 @@ class DuoService:
         )
 
     async def get_stats(self, user_id: str) -> DuoStatsRead:
+        """Rating and win/loss summary; a player with no rating row yet
+        (never finished a match) gets the default rating and all-zero stats."""
         record = await self.ratings.get_by_user(user_id)
         if record is None:
             return DuoStatsRead(
@@ -112,6 +122,8 @@ class DuoService:
         )
 
     async def get_leaderboard(self, user_id: str, limit: int) -> DuoLeaderboardRead:
+        """Top N players by rating, plus the caller's own rank even when
+        they fall outside that top N."""
         rows = await self.ratings.leaderboard(limit)
         entries = [
             DuoLeaderboardEntry(
@@ -130,6 +142,9 @@ class DuoService:
         )
 
     async def preview_room(self, room_code: str) -> DuoRoomPreview:
+        """Let a would-be joiner see the host and settings for a live room
+        before opening a socket. Reads the in-memory registry, not the
+        database, since a WAITING room has no row yet."""
         match = self.registry.get_by_code(room_code)
         if match is None or match.status is not DuoMatchStatus.WAITING:
             raise DuoRoomNotFoundError(room_code)

@@ -33,6 +33,8 @@ class AuthService:
         self.refresh_tokens = refresh_tokens
 
     async def register(self, email: str, password: str, username: str | None = None) -> User:
+        """Create a password-based account; rejects a duplicate email up front
+        so callers get a clear error instead of a database constraint failure."""
         existing_user = await self.users.get_user_by_email(email)
         if existing_user is not None:
             raise EmailAlreadyExistsError("Email is already registered")
@@ -41,6 +43,12 @@ class AuthService:
         return await self.users.create_user(user)
 
     async def login(self, email: str, password: str) -> TokenResponse:
+        """Verify credentials and issue a fresh access/refresh token pair.
+
+        A missing user and a wrong password raise the same error, so a
+        login attempt can't be used to enumerate registered emails. A user
+        with no password (Google-only account) also fails here, on purpose.
+        """
         user = await self.users.get_user_by_email(email)
         if (
             user is None
@@ -55,6 +63,9 @@ class AuthService:
         return await self._issue_token_pair(user)
 
     async def refresh(self, raw_refresh_token: str) -> TokenResponse:
+        """Exchange a still-valid refresh token for a new pair, rotating the
+        old one out (`for_update` locks the row so a token can't be replayed
+        by two concurrent refresh calls to mint two live pairs)."""
         now = datetime.now(UTC)
         stored_token = await self.refresh_tokens.get_refresh_token_by_hash(
             hash_refresh_token(raw_refresh_token),
@@ -74,6 +85,8 @@ class AuthService:
         return await self._issue_token_pair(user, rotated_from=stored_token)
 
     async def logout(self, raw_refresh_token: str) -> None:
+        """Revoke one refresh token; a token that's unknown or already
+        revoked is treated as a no-op rather than an error."""
         stored_token = await self.refresh_tokens.get_refresh_token_by_hash(
             hash_refresh_token(raw_refresh_token)
         )
@@ -85,6 +98,12 @@ class AuthService:
         user: User,
         rotated_from: RefreshToken | None = None,
     ) -> TokenResponse:
+        """Mint a new access token and a new stored refresh token.
+
+        `rotated_from` distinguishes a fresh login (plain create) from a
+        refresh call (atomically revoke the old row while creating the new
+        one), so a stolen refresh token can't be reused after rotation.
+        """
         now = datetime.now(UTC)
         access_token = create_access_token(user.id)
         raw_refresh_token = create_refresh_token()
@@ -106,6 +125,13 @@ class AuthService:
         )
 
     async def login_with_google(self, raw_id_token: str) -> TokenResponse:
+        """Verify a Google ID token, then sign in the matching account or
+        auto-provision one on first login.
+
+        An email already registered through the password flow is never
+        silently linked — that would let anyone who controls a Google
+        account take over an existing email/password account.
+        """
         claims = await verify_google_id_token(raw_id_token)
 
         google_subject = claims["sub"]

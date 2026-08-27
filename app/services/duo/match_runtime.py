@@ -112,6 +112,8 @@ class DuoEngine:
             await self._reattach(match, user, websocket)
 
     async def on_disconnect(self, user_id: str, websocket: WebSocket) -> None:
+        """Route a dropped socket: pull it off the queue, cancel a waiting
+        room, or start the forfeit grace timer for a match in progress."""
         async with self.registry.lock:
             queued = self.registry.dequeue(user_id)
         if queued is not None:
@@ -188,6 +190,11 @@ class DuoEngine:
     async def join_queue(
         self, user: User, websocket: WebSocket, settings: MatchSettings
     ) -> None:
+        """Match against a waiting opponent immediately, or start waiting.
+
+        The lookup and match creation happen under the registry lock so two
+        players joining at the same instant can never be paired twice.
+        """
         rating = await self.persistence.load_rating(user.id)
         entry = QueueEntry(
             user_id=user.id,
@@ -246,6 +253,7 @@ class DuoEngine:
     async def create_room(
         self, user: User, websocket: WebSocket, settings: MatchSettings
     ) -> None:
+        """Open a private WAITING room hosted by this user, for a friend to join by code."""
         rating = await self.persistence.load_rating(user.id)
         async with self.registry.lock:
             if self.registry.is_busy(user.id):
@@ -281,6 +289,7 @@ class DuoEngine:
         )
 
     async def join_room(self, user: User, websocket: WebSocket, room_code: str) -> None:
+        """Seat the second player in a friend room; the host still has to call start_match."""
         rating = await self.persistence.load_rating(user.id)
         async with self.registry.lock:
             if self.registry.is_busy(user.id):
@@ -308,6 +317,7 @@ class DuoEngine:
         await self._announce_match_found(match, auto_start=False)
 
     async def start_match(self, user_id: str, websocket: WebSocket) -> None:
+        """Host-only trigger that kicks off the countdown and the match loop task."""
         match = self.registry.match_of_user(user_id)
         if match is None:
             await _send_error(websocket, ErrorCode.NOT_IN_MATCH, "You are not in a room")
@@ -332,6 +342,12 @@ class DuoEngine:
     async def submit_answer(
         self, user_id: str, websocket: WebSocket, round_index: int, option_id: str
     ) -> None:
+        """Grade one answer against the server-held key and close the round
+        once both connected players have answered.
+
+        `elapsed_ms` is measured from the server's own round clock, so a
+        client cannot inflate its speed bonus by lying about timing.
+        """
         match = self.registry.match_of_user(user_id)
         if match is None or match.status is not DuoMatchStatus.IN_PROGRESS:
             await _send_error(websocket, ErrorCode.NOT_IN_MATCH, "No match in progress")
@@ -378,6 +394,7 @@ class DuoEngine:
         self._close_round_if_everyone_answered(match)
 
     async def leave_match(self, user_id: str) -> None:
+        """Voluntary exit: cancel a waiting room, or forfeit a match in progress."""
         match = self.registry.match_of_user(user_id)
         if match is None:
             return
@@ -403,6 +420,9 @@ class DuoEngine:
     # --- match loop ---------------------------------------------------------
 
     async def _run_match(self, match: LiveMatch) -> None:
+        """The task body that drives one match end-to-end: countdown, every
+        round in sequence, then a normal finish — or an abort if anything
+        throws."""
         try:
             await asyncio.sleep(COUNTDOWN_SECONDS)
             if not await self._prepare(match):
@@ -420,6 +440,11 @@ class DuoEngine:
             await self._abort(match)
 
     async def _prepare(self, match: LiveMatch) -> bool:
+        """Draw the question set and persist the match row before round one.
+
+        Returns False (and aborts the match) when there aren't enough
+        questions to play, so the caller knows not to start the round loop.
+        """
         question_set = await self.persistence.draw_questions(match.settings)
         if len(question_set.questions) < MIN_PLAYABLE_QUESTIONS:
             await self._broadcast_error(
@@ -447,6 +472,9 @@ class DuoEngine:
         return True
 
     async def _run_round(self, match: LiveMatch, index: int) -> None:
+        """Broadcast one question, wait for both answers or the timer, then
+        reveal the result. Runs synchronously inside the match task, so the
+        round's lifetime is exactly this call."""
         question = match.questions[index]
         limit = match.settings.time_per_question
 
@@ -509,6 +537,12 @@ class DuoEngine:
         end_reason: DuoMatchEndReason,
         forfeit_user_id: str | None = None,
     ) -> None:
+        """Settle the match once: decide WIN/LOSE/DRAW, persist the result
+        and rating changes, then push MATCH_FINISHED to both players.
+
+        Guarded by the FINISHED status check so a race between a timeout,
+        a forfeit and normal completion can only ever run this once.
+        """
         if match.status is DuoMatchStatus.FINISHED:
             return
         match.status = DuoMatchStatus.FINISHED
@@ -709,6 +743,7 @@ def _build_match(
     settings: MatchSettings,
     entries: list[QueueEntry],
 ) -> LiveMatch:
+    """Build a fresh in-memory match from queue entries (random matchmaking path)."""
     match = LiveMatch(
         match_id=str(uuid4()),
         mode=mode,
@@ -732,6 +767,8 @@ def _decide_outcomes(
     two_id: str,
     forfeit_user_id: str | None,
 ) -> dict[str, MatchOutcome]:
+    """A forfeit always loses regardless of score; otherwise fall back to
+    the normal score/speed tiebreak in scoring.decide_outcome."""
     if forfeit_user_id is not None:
         other_id = two_id if forfeit_user_id == one_id else one_id
         return {forfeit_user_id: MatchOutcome.LOSE, other_id: MatchOutcome.WIN}

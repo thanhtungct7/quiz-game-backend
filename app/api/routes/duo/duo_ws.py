@@ -36,6 +36,9 @@ router = APIRouter()
 
 @router.websocket("/ws")
 async def duo_websocket(websocket: WebSocket, user: CurrentWebSocketUser) -> None:
+    """Accept the socket, announce the connection, then dispatch every frame
+    until disconnect — the `finally` always runs `on_disconnect`, whether
+    the client closed cleanly or an exception unwound the loop."""
     await websocket.accept()
     await engine.on_connect(user, websocket)
     try:
@@ -49,6 +52,8 @@ async def duo_websocket(websocket: WebSocket, user: CurrentWebSocketUser) -> Non
 
 
 async def _dispatch(user: User, websocket: WebSocket, raw: str) -> None:
+    """Parse one inbound frame and route it to the matching engine call,
+    emitting an `error` frame for anything malformed instead of raising."""
     try:
         message = ClientEnvelope.model_validate_json(raw)
     except ValidationError:
