@@ -1,7 +1,7 @@
 from functools import lru_cache
 from typing import Literal
 
-from pydantic import AnyHttpUrl, EmailStr, Field, SecretStr, field_validator, model_validator
+from pydantic import AnyUrl, EmailStr, Field, SecretStr, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 DEFAULT_DEVELOPMENT_SECRET = "development-only-change-this-secret"  # noqa: S105
@@ -14,11 +14,10 @@ class Settings(BaseSettings):
     api_v1_prefix: str = "/api/v1"
 
     password_reset_expire_minutes: int = Field(
-      default=15,
-      ge=5,
-      le=60,
-  )
-
+        default=15,
+        ge=5,
+        le=60,
+    )
 
     secret_key: SecretStr = SecretStr(DEFAULT_DEVELOPMENT_SECRET)
     access_token_expire_minutes: int = Field(default=30, ge=5, le=1440)
@@ -28,10 +27,12 @@ class Settings(BaseSettings):
     database_url: str = "postgresql+asyncpg://quiz:quiz@localhost:5432/quiz"
     cors_origins: list[str] = ["http://localhost:3000"]
     allowed_hosts: list[str] = ["localhost", "127.0.0.1", "10.0.2.2", "testserver"]
-    password_reset_url: AnyHttpUrl = AnyHttpUrl(  # noqa: S105 (URL, not a secret)
-        "http://localhost:3000/reset-password"
+    # AnyUrl, not AnyHttpUrl: the Android client is reached through its own URI scheme
+    # (quizgame://reset-password), which AnyHttpUrl would reject.
+    password_reset_url: AnyUrl = AnyUrl(  # noqa: S105 (URL, not a secret)
+        "quizgame://reset-password"
     )
-    
+
     smtp_host: str = "localhost"
     smtp_port: int = Field(default=1025, ge=1, le=65535)
     smtp_username: str | None = None
@@ -84,9 +85,7 @@ class Settings(BaseSettings):
             raise ValueError("SMTP_USE_SSL and SMTP_START_TLS cannot both be enabled")
 
         if (self.smtp_username is None) != (self.smtp_password is None):
-            raise ValueError(
-                "SMTP_USERNAME and SMTP_PASSWORD must be configured together"
-            )
+            raise ValueError("SMTP_USERNAME and SMTP_PASSWORD must be configured together")
 
         if (self.first_admin_email is None) != (self.first_admin_password is None):
             raise ValueError(

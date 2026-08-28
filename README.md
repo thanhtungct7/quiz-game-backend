@@ -50,6 +50,8 @@ documentation is then disabled.
 | POST | `/api/v1/auth/refresh` | Rotate a refresh token and get a new token pair |
 | POST | `/api/v1/auth/logout` | Revoke a refresh token |
 | POST | `/api/v1/auth/google` | Exchange a verified Google ID token for an app token pair |
+| POST | `/api/v1/auth/forgot-password` | Email a one-time reset link (always 202) |
+| POST | `/api/v1/auth/reset-password` | Consume the reset token and set a new password |
 | GET | `/api/v1/users/me` | Read the authenticated user |
 | GET | `/api/v1/courses/{id}/tree` | The whole learn path in one ETag-cacheable payload |
 | GET | `/api/v1/lessons/{id}/challenges` | One lesson's questions (paged, `limit` ≤ 100) |
@@ -62,6 +64,28 @@ documentation is then disabled.
 | WS | `/api/v1/duo/ws` | Play a 1v1 match |
 
 Use the access token as `Authorization: Bearer <token>`.
+
+## Password reset
+
+`POST /auth/forgot-password` answers `202` for **every** address, whether or not it
+has an account, and the app shows the same confirmation either way — anything
+else turns the endpoint into an email enumeration oracle. Google-only and
+inactive accounts are silently skipped for the same reason. The SMTP send runs
+as a background task, so a mail provider being down cannot become a `500` that
+only ever fires for addresses that do exist.
+
+The token is one-time, expires after `PASSWORD_RESET_EXPIRE_MINUTES` (15), and
+requesting a new one revokes the previous one. Consuming it revokes every refresh
+token the user has: a reset is what someone does when they suspect a compromise,
+so no session may survive it.
+
+`PASSWORD_RESET_URL` is the link the email points at. The Android app registers
+`quizgame://reset-password`, so the emailed link opens the reset screen on the
+phone directly; the app also accepts the token pasted by hand, for a mailbox read
+on a desktop. Any URL shape works — the token is appended as `?token=...`.
+
+Development mail goes to the Mailpit service in `compose.yaml`; read it at
+`http://localhost:8025`.
 
 ## Course content and the learn path
 

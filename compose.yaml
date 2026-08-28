@@ -13,6 +13,18 @@ services:
       - tt-network
     restart: unless-stopped
 
+  # Development mail sink: catches the password reset emails so they can be read at
+  # http://localhost:8025 without configuring a real provider. Point SMTP_HOST at
+  # "mailpit" (port 1025) when the API runs in compose.
+  mailpit:
+    image: axllent/mailpit:latest
+    ports:
+      - "8025:8025"
+      - "1025:1025"
+    networks:
+      - tt-network
+    restart: unless-stopped
+
 networks:
   tt-network:
     external: true

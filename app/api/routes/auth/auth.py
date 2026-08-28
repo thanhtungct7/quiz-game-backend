@@ -1,4 +1,4 @@
-from fastapi import APIRouter, HTTPException, Response, status
+from fastapi import APIRouter, BackgroundTasks, HTTPException, Response, status
 
 from app.api.dependencies import (
     AuthServiceDependency,
@@ -115,9 +115,11 @@ async def google_login(
 @router.post("/forgot-password", status_code=status.HTTP_202_ACCEPTED)
 async def forgot_password(
     payload: ForgotPasswordRequest,
+    background_tasks: BackgroundTasks,
     service: PasswordResetServiceDependency,
 ) -> dict[str, str]:
-    await service.request_password_reset(str(payload.email))
+    # The email goes out after this response: see PasswordResetService.request_password_reset.
+    await service.request_password_reset(str(payload.email), background_tasks)
     return {
         "message": (
             "If the email exists, a password reset link has been sent to the "
@@ -139,5 +141,3 @@ async def reset_password(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=str(exc),
         ) from exc
-
-    return Response(status_code=status.HTTP_204_NO_CONTENT)
