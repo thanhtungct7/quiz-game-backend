@@ -32,6 +32,13 @@ class UserRepository:
         await self.db.refresh(user)
         return user
 
+    async def update(self, user: User, **fields: object) -> User:
+        for name, value in fields.items():
+            setattr(user, name, value)
+        await self.db.commit()
+        await self.db.refresh(user)
+        return user
+
     async def get_user_by_google_subject(self, subject: str) -> User | None:
         statement = select(User).where(User.google_subject == subject)
         result = await self.db.execute(statement)

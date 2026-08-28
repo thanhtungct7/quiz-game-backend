@@ -20,6 +20,7 @@ from uuid import uuid4
 from fastapi import WebSocket
 from pydantic import BaseModel
 
+from app.core.config import settings as app_settings
 from app.models.auth.user import User
 from app.models.duo.duo_match import DuoMatchEndReason, DuoMatchMode, DuoMatchStatus
 from app.schemas.content.course_content import ChallengePublicRead
@@ -43,6 +44,7 @@ from app.schemas.duo.events import (
     ServerEvent,
     envelope,
 )
+from app.services.auth.avatar_url import resolve_avatar_url
 from app.services.duo.persistence import (
     DatabaseDuoPersistence,
     DuoPersistence,
@@ -102,7 +104,7 @@ class DuoEngine:
                 user=PlayerConn(
                     user_id=user.id,
                     username=user.username,
-                    avatar_url=user.avatar_url,
+                    avatar_url=resolve_avatar_url(user, app_settings),
                     rating=rating,
                 ).to_read(),
                 active_match_id=match.match_id if match is not None else None,
@@ -202,7 +204,7 @@ class DuoEngine:
             settings=settings,
             websocket=websocket,
             username=user.username,
-            avatar_url=user.avatar_url,
+            avatar_url=resolve_avatar_url(user, app_settings),
         )
 
         async with self.registry.lock:
@@ -272,7 +274,7 @@ class DuoEngine:
             match.players[user.id] = PlayerConn(
                 user_id=user.id,
                 username=user.username,
-                avatar_url=user.avatar_url,
+                avatar_url=resolve_avatar_url(user, app_settings),
                 rating=rating,
                 websocket=websocket,
             )
@@ -308,7 +310,7 @@ class DuoEngine:
             match.players[user.id] = PlayerConn(
                 user_id=user.id,
                 username=user.username,
-                avatar_url=user.avatar_url,
+                avatar_url=resolve_avatar_url(user, app_settings),
                 rating=rating,
                 websocket=websocket,
             )

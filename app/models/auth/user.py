@@ -16,6 +16,10 @@ class User(Base):
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid4()))
     username: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    bio: Mapped[str | None] = mapped_column(String(300), nullable=True)
+    # Avatar the user uploaded, held in Google Drive. Takes precedence over [avatar_url],
+    # which only ever carries the googleusercontent picture that came with a Google login.
+    avatar_file_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
     avatar_url: Mapped[str | None] = mapped_column(String(255), nullable=True)
     email: Mapped[str] = mapped_column(String(320), unique=True, index=True)
     hashed_password: Mapped[str | None] = mapped_column(Text, nullable=True)

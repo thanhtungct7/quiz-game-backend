@@ -5,6 +5,7 @@ finish. The one exception is `preview_room`, which reads the in-memory registry
 so a player can check a friend's room code before opening a socket.
 """
 
+from app.core.config import settings
 from app.core.exceptions import (
     DuoMatchNotFoundError,
     DuoRoomNotFoundError,
@@ -27,6 +28,7 @@ from app.schemas.duo.duo import (
     DuoRoundRead,
     DuoStatsRead,
 )
+from app.services.auth.avatar_url import resolve_avatar_url
 from app.services.duo.registry import DuoRegistry
 from app.services.duo.registry import registry as default_registry
 from app.services.duo.scoring import MatchOutcome
@@ -130,7 +132,7 @@ class DuoService:
                 rank=index + 1,
                 user_id=rating.user_id,
                 username=user.username,
-                avatar_url=user.avatar_url,
+                avatar_url=resolve_avatar_url(user, settings),
                 rating=rating.rating,
                 matches_played=rating.matches_played,
                 wins=rating.wins,
@@ -190,7 +192,7 @@ def _to_summary(
             DuoPlayerRead(
                 id=opponent_user.id,
                 username=opponent_user.username,
-                avatar_url=opponent_user.avatar_url,
+                avatar_url=resolve_avatar_url(opponent_user, settings),
                 rating=ratings.get(opponent_user.id, DEFAULT_RATING),
             )
             if opponent_user is not None

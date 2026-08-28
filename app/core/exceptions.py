@@ -33,6 +33,23 @@ class AccountLinkRequiredError(ApplicationError):
 class GoogleAuthUnavailableError(ApplicationError):
     """Raised when Google's identity service cannot be reached."""
 
+
+class AvatarStorageUnavailableError(ApplicationError):
+    """Raised when the avatar backing store (Google Drive) cannot be reached."""
+
+
+class InvalidAvatarError(ApplicationError):
+    """Raised when an uploaded avatar is not an image this app accepts."""
+
+
+class AvatarTooLargeError(ApplicationError):
+    """Raised when an uploaded avatar exceeds the configured size limit."""
+
+
+class AvatarNotFoundError(ApplicationError):
+    """Raised when a user has no avatar to read or delete."""
+
+
 class InvalidPasswordResetTokenError(AuthenticationError):
     """Raised when a password reset token is invalid, expired, or revoked."""
 

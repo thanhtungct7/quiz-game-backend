@@ -23,8 +23,14 @@ from app.repository.duo.duo_match_repository import DuoMatchRepository
 from app.repository.duo.duo_rating_repository import DuoRatingRepository
 from app.repository.progress.user_progress_repository import UserProgressRepository
 from app.services.auth.auth_service import AuthService
+from app.services.auth.avatar_storage import (
+    AvatarStorage,
+    GoogleDriveAvatarStorage,
+    InMemoryAvatarStorage,
+)
 from app.services.auth.email_service import SmtpEmailService
 from app.services.auth.password_reset_service import PasswordResetService
+from app.services.auth.user_service import UserService
 from app.services.content.course_content_service import CourseContentService
 from app.services.content.quiz_service import QuizService
 from app.services.duo.duo_service import DuoService
@@ -117,6 +123,43 @@ def get_password_reset_service(db: DatabaseSession) -> PasswordResetService:
         email_service=SmtpEmailService(settings),
     )
 
+
+_avatar_storage: AvatarStorage | None = None
+
+
+def get_avatar_storage() -> AvatarStorage:
+    """One process-wide instance: it caches the Drive access token and holds the HTTP
+    connection pool, both of which would be thrown away by a per-request instance.
+
+    Falls back to in-memory storage when no Drive credentials are configured, so a
+    developer can exercise the profile screens without a Google project. `Settings`
+    refuses that fallback outside development.
+    """
+    global _avatar_storage
+    if _avatar_storage is None:
+        _avatar_storage = (
+            GoogleDriveAvatarStorage(settings)
+            if settings.is_avatar_storage_configured
+            else InMemoryAvatarStorage()
+        )
+    return _avatar_storage
+
+
+async def close_avatar_storage() -> None:
+    global _avatar_storage
+    if isinstance(_avatar_storage, GoogleDriveAvatarStorage):
+        await _avatar_storage.aclose()
+    _avatar_storage = None
+
+
+def get_user_service(db: DatabaseSession) -> UserService:
+    return UserService(
+        user_repository=UserRepository(db),
+        avatar_storage=get_avatar_storage(),
+        config=settings,
+    )
+
+
 def get_course_content_service(db: DatabaseSession) -> CourseContentService:
     return CourseContentService(
         courses=CourseRepository(db),
@@ -165,3 +208,4 @@ CourseContentServiceDependency = Annotated[
 QuizServiceDependency = Annotated[QuizService, Depends(get_quiz_service)]
 ProgressServiceDependency = Annotated[ProgressService, Depends(get_progress_service)]
 DuoServiceDependency = Annotated[DuoService, Depends(get_duo_service)]
+UserServiceDependency = Annotated[UserService, Depends(get_user_service)]

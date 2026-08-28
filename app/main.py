@@ -10,6 +10,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 
+from app.api.dependencies import close_avatar_storage
 from app.api.router import api_router
 from app.core.config import settings
 from app.core.logging import configure_logging
@@ -42,6 +43,7 @@ async def lifespan(_: FastAPI) -> AsyncIterator[None]:
     with contextlib.suppress(asyncio.CancelledError):
         await housekeeping
     await duo_engine.shutdown()
+    await close_avatar_storage()
     await engine.dispose()
     logger.info("Application stopped")
 

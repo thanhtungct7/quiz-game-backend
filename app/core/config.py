@@ -44,6 +44,15 @@ class Settings(BaseSettings):
 
     google_web_client_id: str = Field(min_length=1)
 
+    # Avatar storage. Uploads go to a folder in the maintainer's own Drive, so these are
+    # OAuth *user* credentials, not a service account: a service account has no My Drive
+    # storage quota of its own and every upload would fail with storageQuotaExceeded.
+    google_drive_client_id: str | None = None
+    google_drive_client_secret: SecretStr | None = None
+    google_drive_refresh_token: SecretStr | None = None
+    google_drive_avatar_folder_id: str = "1FGB_U6l16Y-hNmMVTHBbfdgQkS5MeGiA"
+    max_avatar_bytes: int = Field(default=2 * 1024 * 1024, ge=64 * 1024, le=16 * 1024 * 1024)
+
     first_admin_email: EmailStr | None = None
     first_admin_password: SecretStr | None = Field(default=None, min_length=8, max_length=128)
     first_admin_username: str | None = Field(default=None, min_length=1, max_length=50)
@@ -56,7 +65,13 @@ class Settings(BaseSettings):
     )
 
     @field_validator(
-        "first_admin_email", "first_admin_password", "first_admin_username", mode="before"
+        "first_admin_email",
+        "first_admin_password",
+        "first_admin_username",
+        "google_drive_client_id",
+        "google_drive_client_secret",
+        "google_drive_refresh_token",
+        mode="before",
     )
     @classmethod
     def _blank_env_value_means_unset(cls, value: object) -> object:
@@ -65,6 +80,16 @@ class Settings(BaseSettings):
         if isinstance(value, str) and value.strip() == "":
             return None
         return value
+
+    @property
+    def is_avatar_storage_configured(self) -> bool:
+        return all(
+            (
+                self.google_drive_client_id,
+                self.google_drive_client_secret,
+                self.google_drive_refresh_token,
+            )
+        )
 
     @property
     def is_production(self) -> bool:
@@ -77,6 +102,11 @@ class Settings(BaseSettings):
             raise ValueError("SECRET_KEY must be changed in staging and production")
         if len(secret) < 32:
             raise ValueError("SECRET_KEY must contain at least 32 characters")
+        if self.environment in {"staging", "production"} and not self.is_avatar_storage_configured:
+            raise ValueError(
+                "GOOGLE_DRIVE_CLIENT_ID, GOOGLE_DRIVE_CLIENT_SECRET and "
+                "GOOGLE_DRIVE_REFRESH_TOKEN must be set outside development"
+            )
         if self.environment in {"staging", "production"} and self.debug:
             raise ValueError("DEBUG must be false in staging and production")
         if "*" in self.cors_origins:
