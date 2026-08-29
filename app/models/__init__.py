@@ -11,6 +11,16 @@ from app.models.content.unit import Unit
 from app.models.duo.duo_match import DuoMatch
 from app.models.duo.duo_match_round import DuoMatchRound
 from app.models.duo.duo_rating import DuoRating
+from app.models.game.duo_match_skill_use import DuoMatchSkillUse
+from app.models.game.game_class import GameClass
+from app.models.game.game_item import GameItem
+from app.models.game.gold_transaction import GoldTransaction
+from app.models.game.season import GameSeason, SeasonRating
+from app.models.game.skill import Skill
+from app.models.game.user_daily_activity import UserDailyActivity
+from app.models.game.user_game_profile import UserGameProfile
+from app.models.game.user_item import LootGrant, UserEquipment, UserItem
+from app.models.game.user_skill import UserSkill, UserSkillLoadout
 from app.models.progress.user_challenge_progress import UserChallengeProgress
 from app.models.progress.user_lesson_progress import UserLessonProgress
 
@@ -30,4 +40,18 @@ __all__ = [
     "DuoMatch",
     "DuoMatchRound",
     "DuoRating",
+    "UserGameProfile",
+    "GoldTransaction",
+    "GameClass",
+    "Skill",
+    "UserSkill",
+    "UserSkillLoadout",
+    "DuoMatchSkillUse",
+    "GameItem",
+    "UserItem",
+    "UserEquipment",
+    "LootGrant",
+    "UserDailyActivity",
+    "GameSeason",
+    "SeasonRating",
 ]

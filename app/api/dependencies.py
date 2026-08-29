@@ -21,6 +21,13 @@ from app.repository.content.topic_repository import TopicRepository
 from app.repository.content.unit_repository import UnitRepository
 from app.repository.duo.duo_match_repository import DuoMatchRepository
 from app.repository.duo.duo_rating_repository import DuoRatingRepository
+from app.repository.game.activity_repository import ActivityRepository
+from app.repository.game.catalog_repository import CatalogRepository
+from app.repository.game.game_profile_repository import GameProfileRepository
+from app.repository.game.gold_transaction_repository import GoldTransactionRepository
+from app.repository.game.item_repository import ItemRepository
+from app.repository.game.season_repository import SeasonRepository
+from app.repository.game.user_skill_repository import UserSkillRepository
 from app.repository.progress.user_progress_repository import UserProgressRepository
 from app.services.auth.auth_service import AuthService
 from app.services.auth.avatar_storage import (
@@ -34,6 +41,8 @@ from app.services.auth.user_service import UserService
 from app.services.content.course_content_service import CourseContentService
 from app.services.content.quiz_service import QuizService
 from app.services.duo.duo_service import DuoService
+from app.services.game.game_service import GameService
+from app.services.game.lesson_rewards import LessonRewardService
 from app.services.progress.progress_service import ProgressService
 
 bearer_scheme = HTTPBearer(auto_error=False)
@@ -186,6 +195,22 @@ def get_progress_service(db: DatabaseSession) -> ProgressService:
         lessons=LessonRepository(db),
         units=UnitRepository(db),
         courses=CourseRepository(db),
+        rewards=LessonRewardService(
+            profiles=GameProfileRepository(db), activity=ActivityRepository(db)
+        ),
+    )
+
+
+def get_game_service(db: DatabaseSession) -> GameService:
+    return GameService(
+        profiles=GameProfileRepository(db),
+        catalog=CatalogRepository(db),
+        skills=UserSkillRepository(db),
+        ledger=GoldTransactionRepository(db),
+        progress=UserProgressRepository(db),
+        items=ItemRepository(db),
+        seasons=SeasonRepository(db),
+        ratings=DuoRatingRepository(db),
     )
 
 
@@ -194,6 +219,7 @@ def get_duo_service(db: DatabaseSession) -> DuoService:
         matches=DuoMatchRepository(db),
         ratings=DuoRatingRepository(db),
         challenges=ChallengeRepository(db),
+        seasons=SeasonRepository(db),
     )
 
 
@@ -208,4 +234,5 @@ CourseContentServiceDependency = Annotated[
 QuizServiceDependency = Annotated[QuizService, Depends(get_quiz_service)]
 ProgressServiceDependency = Annotated[ProgressService, Depends(get_progress_service)]
 DuoServiceDependency = Annotated[DuoService, Depends(get_duo_service)]
+GameServiceDependency = Annotated[GameService, Depends(get_game_service)]
 UserServiceDependency = Annotated[UserService, Depends(get_user_service)]

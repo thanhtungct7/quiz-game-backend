@@ -7,19 +7,40 @@ from sqlalchemy.ext.asyncio import async_engine_from_config
 from alembic import context
 from app.core.config import settings
 from app.db.base import Base
+
+# Every model must be imported here, not just the ones autogenerate happens to
+# need: `target_metadata` is built from whatever has been imported, so a missing
+# model reads as a dropped table and autogenerate emits a DROP for it.
 from app.models import (  # noqa: F401
     Challenge,
     ChallengeOption,
     Course,
+    DuoMatch,
+    DuoMatchRound,
+    DuoMatchSkillUse,
+    DuoRating,
+    GameClass,
+    GameItem,
+    GameSeason,
+    GoldTransaction,
     Lesson,
+    LootGrant,
     Passage,
     PasswordResetToken,
     RefreshToken,
+    SeasonRating,
+    Skill,
     Topic,
     Unit,
     User,
     UserChallengeProgress,
+    UserDailyActivity,
+    UserEquipment,
+    UserGameProfile,
+    UserItem,
     UserLessonProgress,
+    UserSkill,
+    UserSkillLoadout,
 )
 
 config = context.config

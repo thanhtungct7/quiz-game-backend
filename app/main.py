@@ -16,9 +16,14 @@ from app.core.config import settings
 from app.core.logging import configure_logging
 from app.db.session import AsyncSessionFactory, engine
 from app.repository.auth.user_repository import UserRepository
+from app.repository.game.catalog_repository import CatalogRepository
+from app.repository.game.item_repository import ItemRepository
+from app.repository.game.season_repository import SeasonRepository
 from app.services.content.admin_bootstrap_service import AdminSeedService, seed_first_admin
 from app.services.duo.housekeeping import abandon_orphaned_matches, run_housekeeping
 from app.services.duo.match_runtime import engine as duo_engine
+from app.services.game.catalog import seed_game_catalog, seed_item_catalog
+from app.services.game.season_service import ensure_active_season
 
 configure_logging(settings.debug)
 logger = logging.getLogger(__name__)
@@ -29,12 +34,21 @@ async def lifespan(_: FastAPI) -> AsyncIterator[None]:
     logger.info("Starting %s in %s mode", settings.app_name, settings.environment)
     async with AsyncSessionFactory() as db:
         await seed_first_admin(AdminSeedService(UserRepository(db)))
+        # Upsert by code, so this is safe to run on every start. Ultimates
+        # bind to the opening units of the learn path and simply do not appear
+        # until the question bank has been imported.
+        await seed_game_catalog(CatalogRepository(db))
+        await seed_item_catalog(ItemRepository(db))
+        await ensure_active_season(SeasonRepository(db))
 
     # Duo match state lives in this process, so anything left IN_PROGRESS
     # belongs to a previous run and can never be resumed.
-    orphaned = await abandon_orphaned_matches()
-    if orphaned:
-        logger.info("Closed %d duo match(es) orphaned by a previous run", orphaned)
+    stranded = await abandon_orphaned_matches()
+    if stranded:
+        logger.info(
+            "Closed duo matches orphaned by a previous run and refunded %d player(s)",
+            stranded,
+        )
     housekeeping = asyncio.create_task(run_housekeeping())
 
     yield

@@ -100,3 +100,43 @@ class DuoRoomNotFoundError(ApplicationError):
 
 class NotMatchMemberError(ApplicationError):
     """Raised when a user reads a duo match they did not play in."""
+
+
+class GameClassNotFoundError(ApplicationError):
+    """Raised when a character class code does not exist."""
+
+
+class SkillNotFoundError(ApplicationError):
+    """Raised when a skill cannot be found."""
+
+
+class SkillAlreadyOwnedError(ApplicationError):
+    """Raised when unlocking a skill the user already has."""
+
+
+class SkillLockedError(ApplicationError):
+    """Raised when a skill's unlock conditions are not met yet."""
+
+
+class NotEnoughGoldError(ApplicationError):
+    """Raised when a purchase costs more gold than the user has."""
+
+
+class InvalidLoadoutError(ApplicationError):
+    """Raised when a requested loadout is not one the user can equip."""
+
+
+class NotEnoughEnergyError(ApplicationError):
+    """Raised when a match is started with an empty energy bar."""
+
+
+class ItemNotFoundError(ApplicationError):
+    """Raised when an item cannot be found."""
+
+
+class InvalidEquipmentError(ApplicationError):
+    """Raised when a requested equipment set is not one the user can wear."""
+
+
+class SeasonNotFoundError(ApplicationError):
+    """Raised when there is no active season."""

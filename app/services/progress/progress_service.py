@@ -21,6 +21,7 @@ from app.schemas.progress.progress import (
     LessonProgressRead,
     UnitProgressRead,
 )
+from app.services.game.lesson_rewards import LessonRewardService
 
 
 class ProgressService:
@@ -31,12 +32,16 @@ class ProgressService:
         lessons: LessonRepository,
         units: UnitRepository,
         courses: CourseRepository,
+        rewards: LessonRewardService | None = None,
     ) -> None:
         self.progress = progress
         self.challenges = challenges
         self.lessons = lessons
         self.units = units
         self.courses = courses
+        # Optional so progress can be read and graded without the game layer
+        # wired in; when absent, finishing a lesson simply pays nothing.
+        self.rewards = rewards
 
     async def check_answer(
         self, user_id: str, challenge_id: str, selected_option_id: str
@@ -187,16 +192,20 @@ class ProgressService:
         now = datetime.now(UTC)
         existing = await self.progress.get_lesson_progress(user_id, lesson_id)
         if existing is None:
+            newly_completed = status == LessonProgressStatus.COMPLETED
             record = UserLessonProgress(
                 user_id=user_id,
                 lesson_id=lesson_id,
                 status=status,
                 correct_challenge_count=mastered,
                 total_challenge_count=total,
-                completed_at=now if status == LessonProgressStatus.COMPLETED else None,
+                completed_at=now if newly_completed else None,
                 updated_at=now,
             )
-            return await self.progress.create_lesson_progress(record)
+            stored = await self.progress.create_lesson_progress(record)
+            if newly_completed:
+                await self._reward_completion(user_id)
+            return stored
 
         updates: dict[str, object] = {
             "status": status,
@@ -204,6 +213,21 @@ class ProgressService:
             "total_challenge_count": total,
             "updated_at": now,
         }
-        if status == LessonProgressStatus.COMPLETED and existing.completed_at is None:
+        # `completed_at` is set once and never cleared, so it doubles as the
+        # flag for "this is the first time" -- redoing a finished lesson must
+        # not pay out again.
+        newly_completed = (
+            status == LessonProgressStatus.COMPLETED and existing.completed_at is None
+        )
+        if newly_completed:
             updates["completed_at"] = now
-        return await self.progress.update_lesson_progress(existing, updates)
+        stored = await self.progress.update_lesson_progress(existing, updates)
+        if newly_completed:
+            await self._reward_completion(user_id)
+        return stored
+
+    async def _reward_completion(self, user_id: str) -> None:
+        """Finishing a lesson refills energy and counts toward the streak."""
+        if self.rewards is None:
+            return
+        await self.rewards.on_lesson_completed(user_id)
