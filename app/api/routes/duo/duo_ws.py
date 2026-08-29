@@ -24,6 +24,7 @@ from app.schemas.duo.events import (
     RoomCreatePayload,
     RoomJoinPayload,
     ServerEvent,
+    SkillUsePayload,
     envelope,
 )
 from app.services.duo.match_runtime import engine
@@ -101,6 +102,15 @@ async def _dispatch(user: User, websocket: WebSocket, raw: str) -> None:
                 return
             await engine.submit_answer(
                 user.id, websocket, answer.round_index, answer.option_id
+            )
+
+        case ClientEvent.SKILL_USE:
+            skill = _parse(SkillUsePayload, message.data)
+            if skill is None:
+                await _invalid(websocket)
+                return
+            await engine.use_skill(
+                user.id, websocket, skill.round_index, skill.skill_code
             )
 
         case ClientEvent.MATCH_LEAVE:

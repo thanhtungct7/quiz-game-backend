@@ -5,24 +5,50 @@ for minutes and must not pin a transaction for that long. Instead each of the
 few moments that actually need the database opens a short session here.
 """
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Protocol
 
 from app.db.session import AsyncSessionFactory
-from app.models.duo.duo_match import DuoMatch, DuoMatchEndReason, DuoMatchStatus
+from app.models.duo.duo_match import (
+    STARTING_HP,
+    DuoMatch,
+    DuoMatchEndReason,
+    DuoMatchStatus,
+)
 from app.models.duo.duo_match_round import DuoMatchRound
 from app.models.duo.duo_rating import DEFAULT_RATING, DuoRating
+from app.models.game.duo_match_skill_use import DuoMatchSkillUse
 from app.repository.content.challenge_repository import ChallengeRepository
 from app.repository.content.lesson_repository import LessonRepository
 from app.repository.content.unit_repository import UnitRepository
 from app.repository.duo.duo_match_repository import DuoMatchRepository
 from app.repository.duo.duo_rating_repository import DuoRatingRepository
+from app.repository.game.activity_repository import ActivityRepository
+from app.repository.game.catalog_repository import CatalogRepository
+from app.repository.game.game_profile_repository import GameProfileRepository
+from app.repository.game.gold_transaction_repository import GoldTransactionRepository
+from app.repository.game.item_repository import ItemRepository
+from app.repository.game.season_repository import SeasonRepository
+from app.repository.game.user_skill_repository import UserSkillRepository
 from app.schemas.content.quiz import QuizSetWithAnswers
+from app.schemas.duo.events import ErrorCode
 from app.services.content.quiz_service import QuizService
 from app.services.duo import rating as elo
+from app.services.duo.loadout import PlayerLoadout
+from app.services.duo.loadout_builder import LoadoutBuilder
 from app.services.duo.scoring import MatchOutcome
 from app.services.duo.state import LiveMatch, MatchSettings, RoundRecord
+from app.services.game.energy_service import EnergyService
+from app.services.game.rewards import RewardInput
+from app.services.game.settlement import (
+    ExpAward,
+    GameSettlementService,
+    GoldAward,
+    LootDrop,
+    SeasonChange,
+    StreakChange,
+)
 
 
 @dataclass
@@ -33,6 +59,10 @@ class MatchResult:
     winner_id: str | None
     end_reason: DuoMatchEndReason
     duration_seconds: int
+    # Who walked out, if anyone. Only this player pays the forfeit penalty --
+    # the opponent of a quitter is a winner, not a forfeiter.
+    forfeit_user_id: str | None = None
+    knockout: bool = False
 
 
 @dataclass
@@ -45,6 +75,31 @@ class RatingChange:
         return self.after - self.before
 
 
+@dataclass(frozen=True)
+class MatchStartRejected:
+    """The match may not begin. Nothing was written and nothing was charged."""
+
+    reason: ErrorCode
+    message: str
+    user_ids: tuple[str, ...]
+
+
+@dataclass
+class MatchRewards:
+    """Everything a finished match paid out, keyed by user id."""
+
+    rating: dict[str, RatingChange]
+    exp: dict[str, ExpAward]
+    gold: dict[str, GoldAward]
+    loot: dict[str, LootDrop | None] = field(default_factory=dict)
+    season: dict[str, SeasonChange | None] = field(default_factory=dict)
+    streak: dict[str, StreakChange | None] = field(default_factory=dict)
+
+    @classmethod
+    def empty(cls) -> "MatchRewards":
+        return cls(rating={}, exp={}, gold={})
+
+
 class DuoPersistence(Protocol):
     """What the engine needs from storage. Tests substitute a fake."""
 
@@ -52,11 +107,15 @@ class DuoPersistence(Protocol):
 
     async def draw_questions(self, settings: MatchSettings) -> QuizSetWithAnswers: ...
 
+    async def start_players(
+        self, match: LiveMatch
+    ) -> dict[str, PlayerLoadout] | MatchStartRejected: ...
+
+    async def refund_start(self, match: LiveMatch) -> None: ...
+
     async def create_match(self, match: LiveMatch) -> None: ...
 
-    async def save_result(
-        self, match: LiveMatch, result: MatchResult
-    ) -> dict[str, RatingChange]: ...
+    async def save_result(self, match: LiveMatch, result: MatchResult) -> MatchRewards: ...
 
     async def cancel_match(self, match: LiveMatch) -> None: ...
 
@@ -89,6 +148,48 @@ class DatabaseDuoPersistence:
                 difficulties=settings.difficulty_list,
             )
 
+    async def start_players(
+        self, match: LiveMatch
+    ) -> dict[str, PlayerLoadout] | MatchStartRejected:
+        """Charge the players and resolve what each brings, in one session.
+
+        Per-match rather than per-player because `DatabaseDuoPersistence` opens
+        a session per call: two players would otherwise mean two sessions, and
+        energy could be taken from one and not the other.
+
+        Energy is checked for everyone before it is taken from anyone, so a
+        rejection leaves both bars untouched and needs no refund.
+        """
+        async with AsyncSessionFactory() as db:
+            profiles = GameProfileRepository(db)
+            energy = EnergyService(profiles=profiles)
+
+            short = await energy.who_is_out_of_energy(match.player_ids)
+            if short:
+                return MatchStartRejected(
+                    reason=ErrorCode.NOT_ENOUGH_ENERGY,
+                    message="Not enough energy to start a match",
+                    user_ids=tuple(short),
+                )
+            await energy.spend_for_match(match.player_ids)
+
+            builder = LoadoutBuilder(
+                profiles=profiles,
+                catalog=CatalogRepository(db),
+                skills=UserSkillRepository(db),
+                items=ItemRepository(db),
+            )
+            return {
+                user_id: await builder.build(user_id) for user_id in match.player_ids
+            }
+
+    async def refund_start(self, match: LiveMatch) -> None:
+        """Give back what the start charged, for a match that never happened."""
+        async with AsyncSessionFactory() as db:
+            await EnergyService(profiles=GameProfileRepository(db)).refund_match(
+                match.player_ids
+            )
+
     async def create_match(self, match: LiveMatch) -> None:
         player_ids = match.player_ids
         async with AsyncSessionFactory() as db:
@@ -114,15 +215,15 @@ class DatabaseDuoPersistence:
                 )
             )
 
-    async def save_result(
-        self, match: LiveMatch, result: MatchResult
-    ) -> dict[str, RatingChange]:
-        """Finalize a match row: apply rating changes, mark it FINISHED with
-        the final scores, and write out every round played.
+    async def save_result(self, match: LiveMatch, result: MatchResult) -> MatchRewards:
+        """Finalize a match: rating, experience and gold, then the match row
+        and every round played.
 
-        Runs as one session so the match record and its rounds are written
-        atomically; rating updates happen first so their result can be
-        embedded in the same response.
+        The first thing this does is claim the match. That claim is what makes
+        the whole method safe to re-enter: the body below commits several times
+        (each repository commits its own write), so without it a retry after a
+        partial failure could pay a player twice. A caller that loses the claim
+        gets an empty reward set and writes nothing.
         """
         player_ids = match.player_ids
         one_id = player_ids[0]
@@ -132,11 +233,37 @@ class DatabaseDuoPersistence:
 
         async with AsyncSessionFactory() as db:
             matches = DuoMatchRepository(db)
+            if not await matches.claim_for_settlement(match.match_id):
+                return MatchRewards.empty()
+
             changes = await self._apply_ratings(DuoRatingRepository(db), match, result)
+            settlements = await GameSettlementService(
+                profiles=GameProfileRepository(db),
+                ledger=GoldTransactionRepository(db),
+                items=ItemRepository(db),
+                seasons=SeasonRepository(db),
+                activity=ActivityRepository(db),
+            ).settle_match(
+                match_id=match.match_id,
+                rewards=_reward_inputs(match, result),
+                # The season ladder mirrors the all-time rating that was just
+                # applied, so it moves with the same Elo result.
+                season_ratings={
+                    user_id: change.after for user_id, change in changes.items()
+                },
+            )
+            rewards = MatchRewards(
+                rating=changes,
+                exp={user_id: s.exp for user_id, s in settlements.items()},
+                gold={user_id: s.gold for user_id, s in settlements.items()},
+                loot={user_id: s.loot for user_id, s in settlements.items()},
+                season={user_id: s.season for user_id, s in settlements.items()},
+                streak={user_id: s.streak for user_id, s in settlements.items()},
+            )
 
             record = await matches.get_by_id(match.match_id)
             if record is None:
-                return changes
+                return rewards
 
             await matches.finish(
                 record,
@@ -148,6 +275,8 @@ class DatabaseDuoPersistence:
                     "player_two_score": two.score if two is not None else 0,
                     "player_one_correct": one.correct_count,
                     "player_two_correct": two.correct_count if two is not None else 0,
+                    "player_one_hp_left": one.hp,
+                    "player_two_hp_left": two.hp if two is not None else STARTING_HP,
                     "finished_at": datetime.now(UTC),
                     "duration_seconds": result.duration_seconds,
                 },
@@ -158,7 +287,20 @@ class DatabaseDuoPersistence:
                     for entry in match.rounds_log
                 ]
             )
-            return changes
+            await matches.add_skill_uses(
+                [
+                    DuoMatchSkillUse(
+                        match_id=match.match_id,
+                        round_index=entry.round_index,
+                        user_id=entry.user_id,
+                        skill_id=entry.skill_id,
+                        skill_code=entry.skill_code,
+                        mana_spent=entry.mana_spent,
+                    )
+                    for entry in match.skill_log
+                ]
+            )
+            return rewards
 
     async def cancel_match(self, match: LiveMatch) -> None:
         async with AsyncSessionFactory() as db:
@@ -208,6 +350,21 @@ class DatabaseDuoPersistence:
         }
 
 
+def _reward_inputs(match: LiveMatch, result: MatchResult) -> dict[str, RewardInput]:
+    """One payout description per player, from what the match already knows."""
+    return {
+        user_id: RewardInput(
+            outcome=outcome,
+            end_reason=result.end_reason,
+            forfeited=user_id == result.forfeit_user_id,
+            correct_count=match.players[user_id].correct_count,
+            knockout=result.knockout,
+        )
+        for user_id, outcome in result.outcome_by_user.items()
+        if user_id in match.players
+    }
+
+
 def _rating_update(record: DuoRating, new_rating: int, score: float) -> dict[str, object]:
     streak = elo.streak_after(record.current_streak, score)
     return {
@@ -227,6 +384,8 @@ def _to_round_row(
 ) -> DuoMatchRound:
     one_answer = record.answers.get(one_id)
     two_answer = record.answers.get(two_id) if two_id is not None else None
+    one_blow = record.blows.get(one_id)
+    two_blow = record.blows.get(two_id) if two_id is not None else None
     return DuoMatchRound(
         match_id=match_id,
         round_index=record.round_index,
@@ -239,4 +398,12 @@ def _to_round_row(
         player_two_elapsed_ms=two_answer.elapsed_ms if two_answer else None,
         player_one_points=one_answer.points if one_answer else 0,
         player_two_points=two_answer.points if two_answer else 0,
+        player_one_damage=one_blow.final_damage if one_blow else 0,
+        player_two_damage=two_blow.final_damage if two_blow else 0,
+        player_one_hp_after=record.hp_after.get(one_id, STARTING_HP),
+        player_two_hp_after=(
+            record.hp_after.get(two_id, STARTING_HP) if two_id is not None else STARTING_HP
+        ),
+        player_one_combo=one_blow.combo_count if one_blow else 0,
+        player_two_combo=two_blow.combo_count if two_blow else 0,
     )

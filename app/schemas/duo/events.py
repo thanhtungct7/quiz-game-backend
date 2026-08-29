@@ -12,9 +12,13 @@ from typing import Any
 from pydantic import BaseModel, Field
 
 from app.models.duo.duo_match import DuoMatchEndReason, DuoMatchMode
+from app.models.game.game_item import ItemRarity
+from app.models.game.skill import SkillEffect
 from app.schemas.content.course_content import ChallengePublicRead
 from app.schemas.duo.duo import DuoPlayerRead, DuoSettingsRead, DuoSettingsRequest
+from app.services.duo.combat import StrikeKind
 from app.services.duo.scoring import MatchOutcome
+from app.services.game.season import RankTier
 
 MAX_CHAT_LENGTH = 200
 
@@ -28,6 +32,7 @@ class ClientEvent(StrEnum):
     ANSWER_SUBMIT = "answer.submit"
     MATCH_LEAVE = "match.leave"
     CHAT_SEND = "chat.send"
+    SKILL_USE = "skill.use"
     PING = "ping"
 
 
@@ -47,6 +52,7 @@ class ServerEvent(StrEnum):
     OPPONENT_RECONNECTED = "opponent.reconnected"
     MATCH_FINISHED = "match.finished"
     CHAT_MESSAGE = "chat.message"
+    SKILL_USED = "skill.used"
     PONG = "pong"
     ERROR = "error"
 
@@ -67,6 +73,12 @@ class ErrorCode(StrEnum):
     ALREADY_ANSWERED = "ALREADY_ANSWERED"
     INVALID_OPTION = "INVALID_OPTION"
     NO_QUESTIONS_AVAILABLE = "NO_QUESTIONS_AVAILABLE"
+    STUNNED = "STUNNED"
+    SKILL_NOT_EQUIPPED = "SKILL_NOT_EQUIPPED"
+    SKILL_ALREADY_USED_THIS_ROUND = "SKILL_ALREADY_USED_THIS_ROUND"
+    NOT_ENOUGH_MANA = "NOT_ENOUGH_MANA"
+    ROUND_NOT_OPEN = "ROUND_NOT_OPEN"
+    NOT_ENOUGH_ENERGY = "NOT_ENOUGH_ENERGY"
 
 
 # --- Client -> server ------------------------------------------------------
@@ -92,6 +104,11 @@ class RoomJoinPayload(BaseModel):
 class AnswerSubmitPayload(BaseModel):
     round_index: int = Field(ge=0)
     option_id: str = Field(min_length=1, max_length=36)
+
+
+class SkillUsePayload(BaseModel):
+    skill_code: str = Field(min_length=1, max_length=32)
+    round_index: int = Field(ge=0)
 
 
 class ChatSendPayload(BaseModel):
@@ -133,11 +150,20 @@ class MatchStartedData(BaseModel):
 
 
 class RoundStartData(BaseModel):
+    """Sent per player: the combat fields differ between the two."""
+
     round_index: int
     total_rounds: int
     question: ChallengePublicRead
     time_limit_seconds: int
     deadline_at: datetime
+    your_hp: int
+    opponent_hp: int
+    your_mana: int
+    your_combo: int
+    # This player's own deadline, which can be shorter than the round's.
+    your_time_limit_seconds: int
+    you_are_stunned: bool
 
 
 class OpponentAnsweredData(BaseModel):
@@ -151,6 +177,18 @@ class AnswerOutcome(BaseModel):
     points: int
 
 
+class BlowRead(BaseModel):
+    """One player's attack in one round, as reported to the client."""
+
+    damage: int
+    strike: StrikeKind
+    combo_count: int
+    combo_multiplier: float
+    is_critical: bool
+    stuns_opponent: bool
+    element_multiplier: float
+
+
 class RoundResultData(BaseModel):
     round_index: int
     correct_option_ids: list[str]
@@ -159,6 +197,12 @@ class RoundResultData(BaseModel):
     opponent: AnswerOutcome
     your_score: int
     opponent_score: int
+    your_blow: BlowRead
+    opponent_blow: BlowRead
+    your_hp: int
+    opponent_hp: int
+    your_mana: int
+    your_combo: int
 
 
 class MatchResumeData(BaseModel):
@@ -174,6 +218,15 @@ class MatchResumeData(BaseModel):
     question: ChallengePublicRead | None
     seconds_remaining: int | None
     already_answered: bool
+    your_hp: int
+    opponent_hp: int
+    your_mana: int
+    your_combo: int
+    you_are_stunned: bool
+    your_max_hp: int
+    # Codes of the skills still standing on you, so a reconnect redraws the
+    # buff row instead of silently dropping it.
+    active_effects: list[str]
 
 
 class OpponentDisconnectedData(BaseModel):
@@ -184,6 +237,42 @@ class RatingChange(BaseModel):
     before: int
     after: int
     delta: int
+
+
+class ExpChange(BaseModel):
+    before: int
+    after: int
+    delta: int
+    level_before: int
+    level_after: int
+    leveled_up: bool
+
+
+class GoldChange(BaseModel):
+    before: int
+    after: int
+    delta: int
+
+
+class LootDropRead(BaseModel):
+    code: str
+    name: str
+    rarity: ItemRarity
+
+
+class SeasonChangeRead(BaseModel):
+    season_code: str
+    rating_before: int
+    rating_after: int
+    tier_before: RankTier
+    tier_after: RankTier
+    promoted: bool
+
+
+class StreakChangeRead(BaseModel):
+    day_streak: int
+    best_day_streak: int
+    extended: bool
 
 
 class MatchFinishedData(BaseModel):
@@ -197,6 +286,30 @@ class MatchFinishedData(BaseModel):
     total_rounds: int
     duration_seconds: int
     rating: RatingChange
+    exp: ExpChange
+    gold: GoldChange
+    your_hp_left: int
+    opponent_hp_left: int
+    loot: LootDropRead | None = None
+    season: SeasonChangeRead | None = None
+    streak: StreakChangeRead | None = None
+    energy_left: int | None = None
+
+
+class SkillUsedData(BaseModel):
+    """Sent to both players. `private` is filled in only for the caster."""
+
+    round_index: int
+    user_id: str
+    skill_code: str
+    skill_name: str
+    effect: SkillEffect
+    magnitude: int
+    mana_spent: int
+    your_hp: int
+    opponent_hp: int
+    your_mana: int
+    private: dict[str, Any] | None = None
 
 
 class ChatMessageData(BaseModel):

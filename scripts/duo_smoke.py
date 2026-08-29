@@ -135,6 +135,7 @@ class Smoke:
         await one.expect("match.started")
         await two.expect("match.started")
         match_id = found_one["match_id"]
+        hp_one = 100
 
         for index in range(3):
             round_one = await one.expect("round.start")
@@ -151,6 +152,17 @@ class Smoke:
                     all("correct" not in o for o in round_one["question"]["options"]),
                 )
 
+            if index == 0:
+                self.check(
+                    "the round carries the combat state",
+                    round_one["your_hp"] == 100
+                    and round_one["opponent_hp"] == 100
+                    and round_one["your_mana"] == 0
+                    and round_one["your_combo"] == 0
+                    and round_one["you_are_stunned"] is False,
+                    f"hp={round_one['your_hp']} mana={round_one['your_mana']}",
+                )
+
             options = round_one["question"]["options"]
             # Player one answers immediately, player two dawdles.
             await one.send(
@@ -164,7 +176,39 @@ class Smoke:
             )
 
             result_one = await one.expect("round.result")
-            await two.expect("round.result")
+            result_two = await two.expect("round.result")
+
+            print(
+                f"    round {index}: "
+                f"one hp={result_one['your_hp']:3d} mana={result_one['your_mana']:3d} "
+                f"combo={result_one['your_combo']} dmg={result_one['your_blow']['damage']:2d} "
+                f"({result_one['your_blow']['strike']})  |  "
+                f"two hp={result_two['your_hp']:3d} mana={result_two['your_mana']:3d} "
+                f"combo={result_two['your_combo']} dmg={result_two['your_blow']['damage']:2d} "
+                f"({result_two['your_blow']['strike']})"
+            )
+            self.check(
+                f"round {index}: health drops by exactly the blow that landed",
+                result_one["your_hp"] == hp_one - result_one["opponent_blow"]["damage"],
+                f"{hp_one} -> {result_one['your_hp']} "
+                f"vs blow {result_one['opponent_blow']['damage']}",
+            )
+            self.check(
+                f"round {index}: both sides agree on the health totals",
+                result_one["your_hp"] == result_two["opponent_hp"]
+                and result_one["opponent_hp"] == result_two["your_hp"],
+            )
+            hp_one = result_one["your_hp"]
+            if result_one["you"]["correct"]:
+                self.check(
+                    f"round {index}: a correct answer deals damage",
+                    result_one["your_blow"]["damage"] > 0,
+                )
+            else:
+                self.check(
+                    f"round {index}: a wrong answer deals nothing",
+                    result_one["your_blow"]["damage"] == 0,
+                )
 
             if index == 0:
                 self.check(
@@ -208,7 +252,474 @@ class Smoke:
             finished_one["rating"]["delta"] == -finished_two["rating"]["delta"],
             f"{finished_one['rating']['delta']} / {finished_two['rating']['delta']}",
         )
+        self.check(
+            "the final health matches the last round reported",
+            finished_one["your_hp_left"] == hp_one,
+            f"{finished_one['your_hp_left']} vs {hp_one}",
+        )
+        self.check(
+            "health agrees from both sides",
+            finished_one["your_hp_left"] == finished_two["opponent_hp_left"],
+        )
+
+        for label, finished in (("one", finished_one), ("two", finished_two)):
+            exp, gold = finished["exp"], finished["gold"]
+            print(
+                f"    {label}: exp {exp['before']}->{exp['after']} "
+                f"({exp['delta']:+d}, level {exp['level_before']}->{exp['level_after']}) "
+                f"gold {gold['before']}->{gold['after']} ({gold['delta']:+d}) "
+                f"hp_left={finished['your_hp_left']}"
+            )
+        self.check(
+            "the winner is paid experience and gold",
+            all(
+                finished[field]["delta"] > 0
+                for finished in (finished_one, finished_two)
+                for field in ("exp", "gold")
+            ),
+            f"one exp={finished_one['exp']['delta']} gold={finished_one['gold']['delta']}",
+        )
+        self.check(
+            "the reported level matches the experience total",
+            finished_one["exp"]["leveled_up"]
+            == (finished_one["exp"]["level_after"] > finished_one["exp"]["level_before"]),
+        )
         return match_id
+
+    async def scenario_game_layer(self, one: Client) -> None:
+        """The REST side of the game layer: profile, class, tree, loadout."""
+        print("\n[9] Game layer: class, skill tree, loadout")
+        headers = {"Authorization": f"Bearer {one.token}"}
+        async with httpx.AsyncClient(timeout=15) as http:
+            profile = await http.get(f"{self.api}/game/profile", headers=headers)
+            self.check(
+                "a profile exists after the first match",
+                profile.status_code == 200 and profile.json()["level"] >= 1,
+                profile.text[:160],
+            )
+
+            tree = await http.get(f"{self.api}/game/skills", headers=headers)
+            self.check("the skill tree is served", tree.status_code == 200, tree.text[:160])
+            nodes = tree.json()["skills"] if tree.status_code == 200 else []
+            starters = [node for node in nodes if node["unlock_kind"] == "STARTER"]
+            self.check(
+                "the starter skills are granted and equipped",
+                len(starters) >= 2 and all(node["owned"] for node in starters),
+                str([(n["code"], n["owned"], n["equipped_slot"]) for n in starters]),
+            )
+            self.check(
+                "every ultimate is gated behind finishing its unit",
+                all(
+                    node["locked_reason"] == "NEEDS_UNIT"
+                    for node in nodes
+                    if node["unlock_kind"] == "UNIT_COMPLETION" and not node["owned"]
+                ),
+                str([n["code"] for n in nodes if n["unlock_kind"] == "UNIT_COMPLETION"]),
+            )
+
+            chosen = await http.post(
+                f"{self.api}/game/class",
+                headers=headers,
+                json={"class_code": "WARRIOR"},
+            )
+            self.check(
+                "the first class is free",
+                chosen.status_code == 200
+                and chosen.json()["class_code"] == "WARRIOR"
+                and chosen.json()["gold"] == profile.json()["gold"],
+                chosen.text[:160],
+            )
+
+            after = await http.get(f"{self.api}/game/skills", headers=headers)
+            warrior_locked = [
+                node["locked_reason"]
+                for node in after.json()["skills"]
+                if node["class_code"] not in (None, "WARRIOR")
+            ]
+            self.check(
+                "another class's skills stay locked",
+                warrior_locked and all(r == "WRONG_CLASS" for r in warrior_locked),
+                str(set(warrior_locked)),
+            )
+
+            owned = [node["id"] for node in after.json()["skills"] if node["owned"]]
+            equipped = await http.put(
+                f"{self.api}/game/loadout",
+                headers=headers,
+                json={"skill_ids": owned[:2]},
+            )
+            self.check(
+                "an owned loadout can be equipped",
+                equipped.status_code == 200 and len(equipped.json()["slots"]) == len(owned[:2]),
+                equipped.text[:160],
+            )
+
+            unowned = next(
+                (node["id"] for node in after.json()["skills"] if not node["owned"]), None
+            )
+            if unowned is not None:
+                refused = await http.put(
+                    f"{self.api}/game/loadout",
+                    headers=headers,
+                    json={"skill_ids": [unowned]},
+                )
+                self.check(
+                    "equipping a skill you do not own is refused",
+                    refused.status_code == 400,
+                    f"{refused.status_code} {refused.text[:120]}",
+                )
+
+    async def scenario_skills(self, one: Client, two: Client) -> None:
+        """Casting a skill mid-match, and the rules around it."""
+        print("\n[10] Skills in a live match")
+        settings = {"question_count": 6, "time_per_question": 10}
+        await one.send("queue.join", settings)
+        await one.expect("queue.waiting")
+        await two.send("queue.join", settings)
+        await one.expect("match.found")
+        await two.expect("match.found")
+        await one.expect("match.started")
+        await two.expect("match.started")
+
+        round_one = await one.expect("round.start")
+        await two.expect("round.start")
+
+        async with httpx.AsyncClient(timeout=15) as http:
+            loadout = await http.get(
+                f"{self.api}/game/loadout",
+                headers={"Authorization": f"Bearer {one.token}"},
+            )
+        slots = loadout.json()["slots"] if loadout.status_code == 200 else []
+        self.check("the player brought skills into the match", bool(slots), loadout.text[:120])
+        if not slots:
+            return
+
+        # No mana at round one, so the first cast has to be refused.
+        await one.send(
+            "skill.use",
+            {"skill_code": slots[0]["code"], "round_index": round_one["round_index"]},
+        )
+        refusal = await self._expect_error(one)
+        self.check(
+            "casting without mana is refused",
+            refusal == "NOT_ENOUGH_MANA",
+            str(refusal),
+        )
+
+        await one.send("skill.use", {"skill_code": "NOT_A_SKILL", "round_index": 0})
+        unknown = await self._expect_error(one)
+        self.check(
+            "casting a skill you have not equipped is refused",
+            unknown == "SKILL_NOT_EQUIPPED",
+            str(unknown),
+        )
+
+        # Play on until there is mana to spend, then cast for real.
+        cast = False
+        for index in range(round_one["round_index"], 6):
+            if index > round_one["round_index"]:
+                current = await one.expect("round.start")
+                await two.expect("round.start")
+            else:
+                current = round_one
+            option_id = current["question"]["options"][0]["id"]
+            if not cast and current["your_mana"] >= slots[0]["mana_cost"]:
+                await one.send(
+                    "skill.use",
+                    {"skill_code": slots[0]["code"], "round_index": index},
+                )
+                used_one = await one.expect("skill.used")
+                used_two = await two.expect("skill.used")
+                self.check(
+                    "both players are told a skill was cast",
+                    used_one["skill_code"] == used_two["skill_code"] == slots[0]["code"],
+                )
+                self.check(
+                    "only the caster sees the private part",
+                    used_two["private"] is None,
+                    str(used_two["private"]),
+                )
+                self.check(
+                    "casting spends mana",
+                    used_one["your_mana"] == current["your_mana"] - slots[0]["mana_cost"],
+                    f"{used_one['your_mana']} from {current['your_mana']}",
+                )
+                await one.send("skill.use", {"skill_code": slots[0]["code"], "round_index": index})
+                twice = await self._expect_error(one)
+                self.check(
+                    "the same skill cannot be cast twice in one round",
+                    twice == "SKILL_ALREADY_USED_THIS_ROUND",
+                    str(twice),
+                )
+                cast = True
+
+            for player in (one, two):
+                await player.send(
+                    "answer.submit", {"round_index": index, "option_id": option_id}
+                )
+            await one.expect("round.result")
+            await two.expect("round.result")
+            if cast:
+                break
+
+        self.check("a skill was cast during the match", cast)
+
+        await one.send("match.leave")
+        await one.expect("match.finished")
+        await two.expect("match.finished")
+
+        async with httpx.AsyncClient(timeout=15) as http:
+            history = await http.get(
+                f"{self.api}/duo/matches?limit=1",
+                headers={"Authorization": f"Bearer {one.token}"},
+            )
+            match_id = history.json()[0]["match_id"]
+            detail = await http.get(
+                f"{self.api}/duo/matches/{match_id}",
+                headers={"Authorization": f"Bearer {one.token}"},
+            )
+        body = detail.json()
+        self.check(
+            "the skill is recorded against the match",
+            detail.status_code == 200
+            and any(use["mine"] for use in body["skill_uses"]),
+            str(body.get("skill_uses"))[:160],
+        )
+        self.check(
+            "the match detail carries the combat columns",
+            all("my_damage" in entry and "my_hp_after" in entry for entry in body["rounds"]),
+        )
+
+    async def scenario_retention(self, one: Client, two: Client) -> None:
+        """Energy, streaks, chests and the ladder."""
+        print("\n[11] Retention: energy, streak, loot, season")
+        headers = {"Authorization": f"Bearer {one.token}"}
+
+        async with httpx.AsyncClient(timeout=15) as http:
+            profile = (await http.get(f"{self.api}/game/profile", headers=headers)).json()
+            energy = profile["energy"]
+            self.check(
+                "the energy bar is reported and has been spent on matches so far",
+                0 <= energy["current"] <= energy["maximum"],
+                str(energy),
+            )
+            self.check(
+                "a bar below full says when the next point lands",
+                energy["current"] == energy["maximum"]
+                or energy["next_regen_at"] is not None,
+                str(energy),
+            )
+            self.check(
+                "playing counted toward the daily streak",
+                profile["day_streak"] >= 1,
+                str(profile["day_streak"]),
+            )
+
+            inventory = (await http.get(f"{self.api}/game/items", headers=headers)).json()
+            self.check(
+                "chests from the matches above landed in the inventory",
+                bool(inventory["items"]),
+                str([row["code"] for row in inventory["items"]])[:160],
+            )
+            self.check(
+                "the reported equipment bonus is within its ceiling",
+                inventory["bonus_max_hp"] <= 20
+                and inventory["bonus_damage_permille"] <= 150,
+                str(inventory)[:160],
+            )
+
+            wearable = next(
+                (row for row in inventory["items"] if row["slot"] == "ARMOR"), None
+            )
+            if wearable is not None:
+                worn = await http.put(
+                    f"{self.api}/game/equipment",
+                    headers=headers,
+                    json={"armor_id": wearable["id"]},
+                )
+                self.check(
+                    "an owned item can be equipped",
+                    worn.status_code == 200
+                    and worn.json()["bonus_max_hp"] >= wearable["bonus_max_hp"],
+                    worn.text[:160],
+                )
+                cleared = await http.put(
+                    f"{self.api}/game/equipment", headers=headers, json={}
+                )
+                self.check(
+                    "clearing a slot removes its bonus",
+                    cleared.status_code == 200 and cleared.json()["bonus_max_hp"] == 0,
+                    cleared.text[:120],
+                )
+
+            cosmetic = next(
+                (row for row in inventory["items"] if row["kind"] != "EQUIPMENT"), None
+            )
+            if cosmetic is not None:
+                refused = await http.put(
+                    f"{self.api}/game/equipment",
+                    headers=headers,
+                    json={"armor_id": cosmetic["id"]},
+                )
+                self.check(
+                    "a cosmetic item cannot be equipped",
+                    refused.status_code == 400,
+                    f"{refused.status_code} {refused.text[:120]}",
+                )
+
+            season = (
+                await http.get(f"{self.api}/game/season/current", headers=headers)
+            ).json()
+            self.check(
+                "a ladder season is open and the player has a tier",
+                bool(season["code"]) and bool(season["tier"]),
+                str(season)[:160],
+            )
+            self.check(
+                "the season records the matches just played",
+                season["matches_played"] >= 1,
+                str(season["matches_played"]),
+            )
+
+            ladder = (
+                await http.get(
+                    f"{self.api}/duo/leaderboard?season=current", headers=headers
+                )
+            ).json()
+            self.check(
+                "the seasonal leaderboard is served with tiers",
+                ladder["scope"] == "current"
+                and all("tier" in entry for entry in ladder["entries"]),
+                str(ladder)[:160],
+            )
+            all_time = (
+                await http.get(
+                    f"{self.api}/duo/leaderboard?season=all_time", headers=headers
+                )
+            ).json()
+            self.check(
+                "the all-time leaderboard is still available",
+                all_time["scope"] == "all_time",
+                str(all_time)[:120],
+            )
+
+        # Drain the bar and confirm the gate.
+        drained = False
+        for _ in range(8):
+            async with httpx.AsyncClient(timeout=15) as http:
+                left = (
+                    await http.get(f"{self.api}/game/profile", headers=headers)
+                ).json()["energy"]["current"]
+            if left == 0:
+                drained = True
+                break
+            await one.send("queue.join", {"question_count": 3, "time_per_question": 5})
+            await two.send("queue.join", {"question_count": 3, "time_per_question": 5})
+            try:
+                await one.expect("match.found", timeout_seconds=10)
+                await two.expect("match.found", timeout_seconds=10)
+                await one.expect("match.finished", timeout_seconds=60)
+                await two.expect("match.finished", timeout_seconds=60)
+            except (AssertionError, TimeoutError):
+                break
+
+        if drained:
+            await one.send("queue.join", {"question_count": 3, "time_per_question": 5})
+            await two.send("queue.join", {"question_count": 3, "time_per_question": 5})
+            code = await self._expect_error(one)
+            self.check(
+                "an empty energy bar refuses a new match",
+                code == "NOT_ENOUGH_ENERGY",
+                str(code),
+            )
+        else:
+            print("    (energy never reached zero; gate not exercised)")
+
+    async def _expect_error(self, client: Client, timeout_seconds: float = 10.0) -> str | None:
+        """Read frames until an error arrives, and return its code.
+
+        `Client.expect` raises on any error frame, which is right everywhere
+        else and exactly wrong when the error is the thing being tested.
+        """
+        while True:
+            raw = await asyncio.wait_for(client.socket.recv(), timeout=timeout_seconds)
+            message = json.loads(raw)
+            client.received.append(message)
+            if message["type"] == "error":
+                return str(message["data"]["code"])
+
+    async def scenario_combat(self, one: Client, two: Client) -> None:
+        """A long match, to exercise combos and reach a knockout if it lands."""
+        print("\n[8] Combat: combos, damage and knockout")
+        rounds = 12
+        settings = {"question_count": rounds, "time_per_question": 10}
+        await one.send("queue.join", settings)
+        await one.expect("queue.waiting")
+        await two.send("queue.join", settings)
+        await one.expect("match.found")
+        await two.expect("match.found")
+        await one.expect("match.started")
+        await two.expect("match.started")
+
+        played = 0
+        best_combo = 0
+        for index in range(rounds):
+            try:
+                round_one = await one.expect("round.start")
+            except (AssertionError, TimeoutError):
+                break
+            await two.expect("round.start")
+
+            # Both answer the same option so combos build on whoever is right.
+            option_id = round_one["question"]["options"][0]["id"]
+            for player in (one, two):
+                await player.send(
+                    "answer.submit", {"round_index": index, "option_id": option_id}
+                )
+            result_one = await one.expect("round.result")
+            await two.expect("round.result")
+            played += 1
+            best_combo = max(best_combo, result_one["your_combo"])
+
+            if result_one["your_blow"]["combo_count"] >= 3:
+                self.check(
+                    "a combo of three or more multiplies the damage",
+                    result_one["your_blow"]["combo_multiplier"] > 1.0,
+                    str(result_one["your_blow"]),
+                )
+            if result_one["opponent_hp"] == 0 or result_one["your_hp"] == 0:
+                break
+
+        finished_one = await one.expect("match.finished")
+        finished_two = await two.expect("match.finished")
+        print(
+            f"    played {played}/{rounds} rounds, best combo {best_combo}, "
+            f"end_reason={finished_one['end_reason']}, "
+            f"hp {finished_one['your_hp_left']} / {finished_two['your_hp_left']}"
+        )
+
+        if finished_one["end_reason"] == "KNOCKOUT":
+            self.check(
+                "a knockout leaves the loser on zero health",
+                0 in (finished_one["your_hp_left"], finished_two["your_hp_left"]),
+                f"{finished_one['your_hp_left']} / {finished_two['your_hp_left']}",
+            )
+            self.check(
+                "a knockout stops the match before its last question",
+                played < rounds,
+                f"played {played} of {rounds}",
+            )
+            self.check(
+                "the player left standing wins the knockout",
+                (finished_one["result"] == "WIN")
+                == (finished_one["your_hp_left"] > finished_two["your_hp_left"]),
+            )
+        else:
+            self.check(
+                "a match that goes the distance leaves both players alive",
+                finished_one["your_hp_left"] > 0 and finished_two["your_hp_left"] > 0,
+                f"{finished_one['your_hp_left']} / {finished_two['your_hp_left']}",
+            )
 
     async def scenario_not_host(self, one: Client, two: Client) -> None:
         """`match.start` from the guest must be refused."""
@@ -455,6 +966,10 @@ class Smoke:
         await self.scenario_rest(one, two, match_id)
         await self.scenario_bad_input(one)
         await self.scenario_bad_token()
+        await self.scenario_combat(one, two)
+        await self.scenario_game_layer(one)
+        await self.scenario_skills(one, two)
+        await self.scenario_retention(one, two)
 
         await one.socket.close()
         await two.socket.close()

@@ -16,6 +16,14 @@ from app.models.content.challenge import ChallengeDifficulty
 from app.models.duo.duo_match import DuoMatchMode, DuoMatchStatus
 from app.schemas.content.course_content import ChallengePublicRead
 from app.schemas.duo.duo import DuoPlayerRead, DuoSettingsRead
+from app.services.duo.combat import MAX_HP, Blow
+from app.services.duo.loadout import (
+    ActiveEffect,
+    EffectState,
+    PlayerLoadout,
+    SkillUseRecord,
+    default_loadout,
+)
 
 
 @dataclass(frozen=True)
@@ -55,7 +63,36 @@ class PlayerConn:
     score: int = 0
     correct_count: int = 0
     total_elapsed_ms: int = 0
+    hp: int = MAX_HP
+    mana: int = 0
+    combo: int = 0
+    best_combo: int = 0
+    # The exact round index this player has to sit out, or None. An exact index
+    # rather than a countdown because the stun is granted while settling round
+    # N and applies to round N+1, and a countdown would be ambiguous about
+    # which of the two it meant.
+    stunned_round_index: int | None = None
+    # This player's own deadline for the current round, which can be shorter
+    # than the round's once skills can shorten it.
+    effective_limit_ms: int = 0
+    # Resolved once when the match starts and read-only from then on.
+    loadout: PlayerLoadout | None = None
+    effects: EffectState = field(default_factory=EffectState)
+    skills_used_this_round: set[str] = field(default_factory=set)
     grace_task: asyncio.Task[None] | None = None
+
+    def is_stunned_for(self, round_index: int) -> bool:
+        return self.stunned_round_index == round_index
+
+    @property
+    def build(self) -> PlayerLoadout:
+        """The loadout, or baseline stats for a player who never picked a class."""
+        if self.loadout is None:
+            return default_loadout(self.user_id)
+        return self.loadout
+
+    def add_effect(self, effect: ActiveEffect) -> None:
+        self.effects.add(effect)
 
     def to_read(self) -> DuoPlayerRead:
         return DuoPlayerRead(
@@ -79,6 +116,8 @@ class RoundRecord:
     round_index: int
     challenge_id: str
     answers: dict[str, SubmittedAnswer]
+    blows: dict[str, Blow] = field(default_factory=dict)
+    hp_after: dict[str, int] = field(default_factory=dict)
 
 
 @dataclass
@@ -104,6 +143,14 @@ class LiveMatch:
     finished_at: float | None = None
     started_wall: datetime | None = None
     persisted: bool = False
+    # Set once a blow drops someone to zero. The round it happens in still
+    # plays out and still reports its result; the match loop stops afterwards.
+    ko_pending: bool = False
+    # True once the start charged the players. Cleared when it is handed back.
+    energy_spent: bool = False
+    # Buffered in memory and flushed with the match, so a live round never
+    # waits on a database round trip.
+    skill_log: list[SkillUseRecord] = field(default_factory=list)
 
     @property
     def player_ids(self) -> list[str]:

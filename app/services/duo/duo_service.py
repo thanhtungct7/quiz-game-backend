@@ -18,6 +18,7 @@ from app.models.duo.duo_rating import DEFAULT_RATING
 from app.repository.content.challenge_repository import ChallengeRepository
 from app.repository.duo.duo_match_repository import DuoMatchRepository
 from app.repository.duo.duo_rating_repository import DuoRatingRepository
+from app.repository.game.season_repository import SeasonRepository
 from app.schemas.duo.duo import (
     DuoLeaderboardEntry,
     DuoLeaderboardRead,
@@ -26,12 +27,15 @@ from app.schemas.duo.duo import (
     DuoPlayerRead,
     DuoRoomPreview,
     DuoRoundRead,
+    DuoSkillUseRead,
     DuoStatsRead,
+    LeaderboardScope,
 )
 from app.services.auth.avatar_url import resolve_avatar_url
 from app.services.duo.registry import DuoRegistry
 from app.services.duo.registry import registry as default_registry
 from app.services.duo.scoring import MatchOutcome
+from app.services.game.season import tier_for_rating
 
 
 class DuoService:
@@ -41,11 +45,14 @@ class DuoService:
         ratings: DuoRatingRepository,
         challenges: ChallengeRepository,
         registry: DuoRegistry | None = None,
+        seasons: SeasonRepository | None = None,
     ) -> None:
         self.matches = matches
         self.ratings = ratings
         self.challenges = challenges
         self.registry = registry or default_registry
+        # Optional: without it the leaderboard simply serves the all-time board.
+        self.seasons = seasons
 
     async def list_history(
         self, user_id: str, limit: int, offset: int
@@ -94,6 +101,21 @@ class DuoService:
             rounds=[
                 _to_round(entry, questions, is_player_one) for entry in record.rounds
             ],
+            my_hp_left=(
+                record.player_one_hp_left if is_player_one else record.player_two_hp_left
+            ),
+            opponent_hp_left=(
+                record.player_two_hp_left if is_player_one else record.player_one_hp_left
+            ),
+            skill_uses=[
+                DuoSkillUseRead(
+                    round_index=use.round_index,
+                    skill_code=use.skill_code,
+                    mana_spent=use.mana_spent,
+                    mine=use.user_id == user_id,
+                )
+                for use in await self.matches.list_skill_uses(match_id)
+            ],
         )
 
     async def get_stats(self, user_id: str) -> DuoStatsRead:
@@ -123,10 +145,48 @@ class DuoService:
             best_streak=record.best_streak,
         )
 
-    async def get_leaderboard(self, user_id: str, limit: int) -> DuoLeaderboardRead:
+    async def get_leaderboard(
+        self,
+        user_id: str,
+        limit: int,
+        scope: LeaderboardScope = LeaderboardScope.CURRENT,
+    ) -> DuoLeaderboardRead:
         """Top N players by rating, plus the caller's own rank even when
-        they fall outside that top N."""
+        they fall outside that top N.
+
+        The seasonal board is the default. The all-time board reads
+        `duo_ratings`, which is never reset, so both views stay available.
+        """
+        if scope is LeaderboardScope.CURRENT and self.seasons is not None:
+            return await self._season_leaderboard(user_id, limit)
+
         rows = await self.ratings.leaderboard(limit)
+        return DuoLeaderboardRead(
+            entries=[
+                DuoLeaderboardEntry(
+                    rank=index + 1,
+                    user_id=rating.user_id,
+                    username=user.username,
+                    avatar_url=resolve_avatar_url(user, settings),
+                    rating=rating.rating,
+                    matches_played=rating.matches_played,
+                    wins=rating.wins,
+                    tier=tier_for_rating(rating.rating),
+                )
+                for index, (rating, user) in enumerate(rows)
+            ],
+            my_rank=await self.ratings.rank_of(user_id),
+            scope=LeaderboardScope.ALL_TIME,
+        )
+
+    async def _season_leaderboard(self, user_id: str, limit: int) -> DuoLeaderboardRead:
+        assert self.seasons is not None
+        season = await self.seasons.active()
+        if season is None:
+            # No season open yet: fall back rather than serving an empty board.
+            return await self.get_leaderboard(user_id, limit, LeaderboardScope.ALL_TIME)
+
+        rows = await self.seasons.leaderboard(season.id, limit)
         entries = [
             DuoLeaderboardEntry(
                 rank=index + 1,
@@ -136,11 +196,18 @@ class DuoService:
                 rating=rating.rating,
                 matches_played=rating.matches_played,
                 wins=rating.wins,
+                tier=tier_for_rating(rating.rating),
             )
             for index, (rating, user) in enumerate(rows)
         ]
+        my_rank = next(
+            (entry.rank for entry in entries if entry.user_id == user_id), None
+        )
         return DuoLeaderboardRead(
-            entries=entries, my_rank=await self.ratings.rank_of(user_id)
+            entries=entries,
+            my_rank=my_rank,
+            scope=LeaderboardScope.CURRENT,
+            season_code=season.code,
         )
 
     async def preview_room(self, room_code: str) -> DuoRoomPreview:
@@ -236,4 +303,14 @@ def _to_round(
         ),
         my_points=entry.player_one_points if is_player_one else entry.player_two_points,
         opponent_points=entry.player_two_points if is_player_one else entry.player_one_points,
+        my_damage=entry.player_one_damage if is_player_one else entry.player_two_damage,
+        opponent_damage=(
+            entry.player_two_damage if is_player_one else entry.player_one_damage
+        ),
+        my_hp_after=entry.player_one_hp_after if is_player_one else entry.player_two_hp_after,
+        opponent_hp_after=(
+            entry.player_two_hp_after if is_player_one else entry.player_one_hp_after
+        ),
+        my_combo=entry.player_one_combo if is_player_one else entry.player_two_combo,
+        opponent_combo=entry.player_two_combo if is_player_one else entry.player_one_combo,
     )

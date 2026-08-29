@@ -7,10 +7,13 @@ queue entry nobody was ever paired with. A single background task sweeps both.
 
 import asyncio
 import logging
+from datetime import UTC, datetime
 
 from app.db.session import AsyncSessionFactory
 from app.models.duo.duo_match import DuoMatchStatus
 from app.repository.duo.duo_match_repository import DuoMatchRepository
+from app.repository.game.game_profile_repository import GameProfileRepository
+from app.repository.game.season_repository import SeasonRepository
 from app.schemas.duo.events import ServerEvent, envelope
 from app.services.duo.match_runtime import (
     QUEUE_TIMEOUT_SECONDS,
@@ -18,6 +21,8 @@ from app.services.duo.match_runtime import (
     DuoEngine,
 )
 from app.services.duo.match_runtime import engine as default_engine
+from app.services.game.energy_service import EnergyService
+from app.services.game.season_service import roll_over_if_due
 
 logger = logging.getLogger(__name__)
 
@@ -25,13 +30,33 @@ SWEEP_INTERVAL_SECONDS = 60.0
 
 
 async def abandon_orphaned_matches() -> int:
-    """Close matches a previous process left running.
+    """Close matches a previous process left running, and refund their cost.
 
-    Live state is in memory, so a restart makes every IN_PROGRESS match
-    unreachable; without this they would sit in history forever.
+    A match that charged its players and then died with the process owes that
+    energy back. This is the only place that window is covered: the engine
+    cannot refund from a cancelled task, and awaiting the database while being
+    cancelled is exactly the fragile thing to avoid.
     """
     async with AsyncSessionFactory() as db:
-        return await DuoMatchRepository(db).abandon_orphaned()
+        stranded = await DuoMatchRepository(db).abandon_orphaned()
+        if stranded:
+            await EnergyService(profiles=GameProfileRepository(db)).refund_match(
+                stranded
+            )
+        # Two players per match, and a match with an empty second seat counts
+        # once.
+        return len(stranded)
+
+
+async def roll_seasons() -> str | None:
+    """Close a finished ladder season and open the next one.
+
+    Ridden on the sweep that already runs every minute rather than given a cron
+    of its own, because nothing else in this service needs a scheduler.
+    """
+    async with AsyncSessionFactory() as db:
+        season = await roll_over_if_due(SeasonRepository(db), datetime.now(UTC))
+        return season.code if season is not None else None
 
 
 async def sweep(engine: DuoEngine | None = None) -> None:
@@ -58,6 +83,10 @@ async def sweep(engine: DuoEngine | None = None) -> None:
         ):
             logger.info("Closing idle duo room %s", match.room_code or match.match_id)
             await active.close_idle_room(match)
+
+    opened = await roll_seasons()
+    if opened is not None:
+        logger.info("Opened ladder season %s", opened)
 
 
 async def run_housekeeping(interval_seconds: float = SWEEP_INTERVAL_SECONDS) -> None:

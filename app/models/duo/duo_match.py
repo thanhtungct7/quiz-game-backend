@@ -12,6 +12,10 @@ from app.models.content.challenge import ChallengeDifficulty
 if TYPE_CHECKING:
     from app.models.duo.duo_match_round import DuoMatchRound
 
+# Mirrors combat.MAX_HP, declared here so the model layer does not depend on a
+# service. tests/test_duo_combat.py asserts the two never drift apart.
+STARTING_HP = 100
+
 
 class DuoMatchMode(StrEnum):
     RANDOM = "RANDOM"
@@ -31,6 +35,7 @@ class DuoMatchEndReason(StrEnum):
     OPPONENT_LEFT = "OPPONENT_LEFT"
     OPPONENT_TIMEOUT = "OPPONENT_TIMEOUT"
     CANCELLED = "CANCELLED"
+    KNOCKOUT = "KNOCKOUT"
 
 
 class DuoMatch(Base):
@@ -74,6 +79,12 @@ class DuoMatch(Base):
     )
     player_two_correct: Mapped[int] = mapped_column(
         Integer, nullable=False, default=0, server_default="0"
+    )
+    player_one_hp_left: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=STARTING_HP, server_default=str(STARTING_HP)
+    )
+    player_two_hp_left: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=STARTING_HP, server_default=str(STARTING_HP)
     )
     question_count: Mapped[int] = mapped_column(Integer, nullable=False)
     time_per_question: Mapped[int] = mapped_column(Integer, nullable=False)

@@ -12,6 +12,7 @@ from app.models.content.challenge import Challenge, ChallengeType
 from app.models.duo.duo_match import DuoMatch, DuoMatchMode, DuoMatchStatus
 from app.models.duo.duo_match_round import DuoMatchRound
 from app.models.duo.duo_rating import DuoRating
+from app.models.game.duo_match_skill_use import DuoMatchSkillUse
 from app.services.duo.duo_service import DuoService
 from app.services.duo.registry import DuoRegistry
 from app.services.duo.scoring import MatchOutcome
@@ -22,8 +23,11 @@ TWO = "player-two"
 
 
 class FakeDuoMatchRepository:
-    def __init__(self, matches: list[DuoMatch]) -> None:
+    def __init__(
+        self, matches: list[DuoMatch], skill_uses: list[DuoMatchSkillUse] | None = None
+    ) -> None:
         self.matches = matches
+        self.skill_uses = skill_uses or []
 
     async def list_for_user(self, user_id: str, limit: int, offset: int) -> list[DuoMatch]:
         owned = [
@@ -35,6 +39,9 @@ class FakeDuoMatchRepository:
 
     async def get_with_rounds(self, match_id: str) -> DuoMatch | None:
         return next((match for match in self.matches if match.id == match_id), None)
+
+    async def list_skill_uses(self, match_id: str) -> list[DuoMatchSkillUse]:
+        return list(self.skill_uses)
 
 
 class FakeDuoRatingRepository:
@@ -102,6 +109,8 @@ def _match(
         player_two_score=3100,
         player_one_correct=7,
         player_two_correct=5,
+        player_one_hp_left=64,
+        player_two_hp_left=0,
         question_count=10,
         time_per_question=15,
         created_at=datetime.now(UTC),
@@ -223,6 +232,12 @@ async def test_match_detail_mirrors_each_round_for_player_two() -> None:
         player_two_elapsed_ms=9000,
         player_one_points=940,
         player_two_points=0,
+        player_one_damage=18,
+        player_two_damage=0,
+        player_one_hp_after=100,
+        player_two_hp_after=82,
+        player_one_combo=1,
+        player_two_combo=0,
     )
     challenge = Challenge(
         id="c1",

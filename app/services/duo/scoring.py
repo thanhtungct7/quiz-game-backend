@@ -7,6 +7,8 @@ caller, never taken from the client.
 from dataclasses import dataclass
 from enum import StrEnum
 
+from app.services.duo.combat import MAX_HP
+
 MAX_POINTS = 1000
 BASE_SHARE = 0.5
 
@@ -24,6 +26,9 @@ class PlayerTotals:
     score: int
     correct_count: int
     total_elapsed_ms: int
+    # Defaults to full health so a match played without combat decides on
+    # score exactly as it always did.
+    hp_left: int = MAX_HP
 
 
 def award_points(is_correct: bool, elapsed_ms: int, time_limit_seconds: int) -> int:
@@ -47,9 +52,17 @@ def award_points(is_correct: bool, elapsed_ms: int, time_limit_seconds: int) -> 
 def decide_outcome(one: PlayerTotals, two: PlayerTotals) -> MatchOutcome:
     """Outcome from player one's point of view.
 
-    Tiebreaks in order: total score, then number of correct answers, then the
-    lower cumulative answer time. Equal on all three is a genuine draw.
+    Health decides first: whoever has more of it left has won the fight, and a
+    player on zero has lost outright. Points still accumulate exactly as they
+    did and still decide everything below that -- they just no longer come
+    first. Two players who knocked each other out in the same round are level
+    on health and fall through to the point tiebreaks like anyone else.
+
+    Remaining tiebreaks in order: total score, then number of correct answers,
+    then the lower cumulative answer time. Equal on all four is a genuine draw.
     """
+    if one.hp_left != two.hp_left:
+        return MatchOutcome.WIN if one.hp_left > two.hp_left else MatchOutcome.LOSE
     if one.score != two.score:
         return MatchOutcome.WIN if one.score > two.score else MatchOutcome.LOSE
     if one.correct_count != two.correct_count:

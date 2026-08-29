@@ -28,6 +28,7 @@ from app.schemas.duo.duo import (
     DuoRoomPreview,
     DuoSettingsRead,
     DuoStatsRead,
+    LeaderboardScope,
 )
 from app.services.duo.scoring import MatchOutcome
 
@@ -119,7 +120,12 @@ class FakeDuoService:
         assert self.stats is not None
         return self.stats
 
-    async def get_leaderboard(self, user_id: str, limit: int) -> DuoLeaderboardRead:
+    async def get_leaderboard(
+        self,
+        user_id: str,
+        limit: int,
+        scope: LeaderboardScope = LeaderboardScope.CURRENT,
+    ) -> DuoLeaderboardRead:
         assert self.leaderboard is not None
         return self.leaderboard
 
@@ -173,7 +179,13 @@ async def test_get_match_maps_a_stranger_to_403() -> None:
 
 @pytest.mark.asyncio
 async def test_get_match_returns_detail_with_rounds() -> None:
-    detail = DuoMatchDetail(**_summary().model_dump(), rounds=[])
+    detail = DuoMatchDetail(
+        **_summary().model_dump(),
+        rounds=[],
+        my_hp_left=40,
+        opponent_hp_left=0,
+        skill_uses=[],
+    )
     service = FakeDuoService(detail=detail)
 
     result = await get_match(

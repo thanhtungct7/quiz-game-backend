@@ -53,6 +53,43 @@ def test_identical_totals_are_a_draw() -> None:
     assert decide_outcome(totals, totals) is MatchOutcome.DRAW
 
 
+def test_health_beats_score() -> None:
+    # Losing the fight while winning on points is still losing.
+    one = PlayerTotals(score=3000, correct_count=3, total_elapsed_ms=1_000, hp_left=0)
+    two = PlayerTotals(score=500, correct_count=1, total_elapsed_ms=9_000, hp_left=12)
+    assert decide_outcome(one, two) is MatchOutcome.LOSE
+    assert decide_outcome(two, one) is MatchOutcome.WIN
+
+
+def test_a_knockout_is_decided_by_health_alone() -> None:
+    winner = PlayerTotals(score=0, correct_count=0, total_elapsed_ms=0, hp_left=1)
+    loser = PlayerTotals(score=0, correct_count=0, total_elapsed_ms=0, hp_left=0)
+    assert decide_outcome(winner, loser) is MatchOutcome.WIN
+
+
+def test_a_double_knockout_falls_through_to_the_point_tiebreaks() -> None:
+    one = PlayerTotals(score=2000, correct_count=2, total_elapsed_ms=4_000, hp_left=0)
+    two = PlayerTotals(score=1500, correct_count=2, total_elapsed_ms=4_000, hp_left=0)
+    assert decide_outcome(one, two) is MatchOutcome.WIN
+
+
+def test_equal_health_decides_on_points_exactly_as_before() -> None:
+    one = PlayerTotals(score=2000, correct_count=2, total_elapsed_ms=9_000, hp_left=40)
+    two = PlayerTotals(score=1500, correct_count=3, total_elapsed_ms=1_000, hp_left=40)
+    assert decide_outcome(one, two) is MatchOutcome.WIN
+
+
+def test_full_health_is_the_default_so_score_still_decides() -> None:
+    one = PlayerTotals(score=2000, correct_count=2, total_elapsed_ms=9_000)
+    two = PlayerTotals(score=1500, correct_count=3, total_elapsed_ms=1_000)
+    assert decide_outcome(one, two) is MatchOutcome.WIN
+
+
+def test_identical_totals_including_health_are_a_draw() -> None:
+    totals = PlayerTotals(score=1500, correct_count=3, total_elapsed_ms=4_000, hp_left=55)
+    assert decide_outcome(totals, totals) is MatchOutcome.DRAW
+
+
 def test_invert_swaps_win_and_lose_but_keeps_draw() -> None:
     assert invert(MatchOutcome.WIN) is MatchOutcome.LOSE
     assert invert(MatchOutcome.LOSE) is MatchOutcome.WIN

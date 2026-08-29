@@ -11,6 +11,7 @@ from app.schemas.duo.duo import (
     DuoMatchSummary,
     DuoRoomPreview,
     DuoStatsRead,
+    LeaderboardScope,
 )
 
 router = APIRouter()
@@ -48,8 +49,9 @@ async def get_leaderboard(
     current_user: CurrentUser,
     service: DuoServiceDependency,
     limit: Annotated[int, Query(gt=0, le=100)] = 50,
+    season: LeaderboardScope = LeaderboardScope.CURRENT,
 ) -> DuoLeaderboardRead:
-    return await service.get_leaderboard(current_user.id, limit)
+    return await service.get_leaderboard(current_user.id, limit, season)
 
 
 @router.get("/rooms/{room_code}", response_model=DuoRoomPreview)

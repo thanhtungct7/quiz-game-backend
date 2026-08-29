@@ -48,4 +48,22 @@ class DuoMatchRound(Base):
     player_two_points: Mapped[int] = mapped_column(
         Integer, nullable=False, default=0, server_default="0"
     )
+    player_one_damage: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0, server_default="0"
+    )
+    player_two_damage: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0, server_default="0"
+    )
+    player_one_hp_after: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0, server_default="0"
+    )
+    player_two_hp_after: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0, server_default="0"
+    )
+    player_one_combo: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0, server_default="0"
+    )
+    player_two_combo: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0, server_default="0"
+    )
     match: Mapped["DuoMatch"] = relationship("DuoMatch", back_populates="rounds")

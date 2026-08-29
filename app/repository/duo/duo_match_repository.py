@@ -4,6 +4,7 @@ from sqlalchemy.orm import selectinload
 
 from app.models.duo.duo_match import DuoMatch, DuoMatchEndReason, DuoMatchStatus
 from app.models.duo.duo_match_round import DuoMatchRound
+from app.models.game.duo_match_skill_use import DuoMatchSkillUse
 
 
 class DuoMatchRepository:
@@ -54,34 +55,67 @@ class DuoMatchRepository:
         await self.db.refresh(match)
         return match
 
+    async def claim_for_settlement(self, match_id: str) -> bool:
+        """Flip IN_PROGRESS -> FINISHED, and say whether this caller did it.
+
+        Settling a match writes to several tables and commits more than once,
+        so a crash or a retry can re-enter it partway through. This is the
+        serialization point: exactly one caller sees True, and only that caller
+        is allowed to hand out rewards.
+        """
+        statement = (
+            update(DuoMatch)
+            .where(DuoMatch.id == match_id, DuoMatch.status == DuoMatchStatus.IN_PROGRESS)
+            .values(status=DuoMatchStatus.FINISHED)
+            .returning(DuoMatch.id)
+        )
+        result = await self.db.execute(statement)
+        claimed = result.scalar_one_or_none() is not None
+        await self.db.commit()
+        return claimed
+
     async def add_rounds(self, rounds: list[DuoMatchRound]) -> None:
         if not rounds:
             return
         self.db.add_all(rounds)
         await self.db.commit()
 
-    async def abandon_orphaned(self) -> int:
+    async def abandon_orphaned(self) -> list[str]:
         """Close matches left IN_PROGRESS by a previous process.
 
         Live match state lives in memory, so a restart makes every running
         match unreachable; without this they would sit in history forever.
-        """
-        counted = await self.db.execute(
-            select(func.count())
-            .select_from(DuoMatch)
-            .where(DuoMatch.status == DuoMatchStatus.IN_PROGRESS)
-        )
-        orphaned = int(counted.scalar_one())
-        if orphaned == 0:
-            return 0
 
-        await self.db.execute(
+        Returns the ids of the players who were in them, so their energy can be
+        handed back: the match charged them and then never ran.
+        """
+        statement = (
             update(DuoMatch)
             .where(DuoMatch.status == DuoMatchStatus.IN_PROGRESS)
             .values(
                 status=DuoMatchStatus.ABANDONED,
                 end_reason=DuoMatchEndReason.CANCELLED,
+                finished_at=func.now(),
             )
+            .returning(DuoMatch.player_one_id, DuoMatch.player_two_id)
         )
+        result = await self.db.execute(statement)
         await self.db.commit()
-        return orphaned
+        return [
+            user_id for row in result.all() for user_id in row if user_id is not None
+        ]
+
+    async def add_skill_uses(self, uses: list[DuoMatchSkillUse]) -> None:
+        if not uses:
+            return
+        self.db.add_all(uses)
+        await self.db.commit()
+
+    async def list_skill_uses(self, match_id: str) -> list[DuoMatchSkillUse]:
+        statement = (
+            select(DuoMatchSkillUse)
+            .where(DuoMatchSkillUse.match_id == match_id)
+            .order_by(DuoMatchSkillUse.round_index, DuoMatchSkillUse.created_at)
+        )
+        result = await self.db.execute(statement)
+        return list(result.scalars().all())
