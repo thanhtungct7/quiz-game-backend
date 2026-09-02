@@ -1,15 +1,25 @@
 """Bulk-import the quiz JSON files under data/quiz/ into a self-contained
-"Ngan hang cau hoi" course so they're queryable through the existing
-question-bank schema (Course -> Unit -> Lesson -> Challenge -> ChallengeOption)
-and through QuizService's random-sample generation.
+"Ngan hang cau hoi" course, laid out as a learning path that climbs the TOEIC
+score scale.
 
-Each source file is one "group". A group is laid out as a stretch of the
-learning path -- a few units, each of `--lessons-per-unit` lessons holding
-`--challenges-per-lesson` questions -- and everything past that budget goes
-into a single `is_bank=True` lesson. Bank lessons are hidden from the course
-tree but still feed duo matches and practice draws, which sample the whole
-`challenges` table. This is what keeps a lesson finishable: the bank holds
-~156k questions, while a lesson holds ten.
+Three rules shape the path, in order of importance:
+
+1. One path lesson holds exactly ``--challenges-per-lesson`` questions, all of
+   the same question kind and the same source ``toeic_band``.
+2. One unit holds ``--lessons-per-unit`` lessons of a single band, cycling
+   through every question kind that band has, so two neighbouring lessons are
+   never the same kind.
+3. Units are emitted band by band, lowest band first -- walking the path is
+   walking up the score scale.
+
+The ten raw ``toeic_band`` values are merged into the five bands in `BANDS`:
+six of the ten carry only a single question kind, so a unit could not be both
+single-band and multi-kind without merging them.
+
+Everything that does not fit on the path lands in a per-band ``is_bank=True``
+lesson -- hidden from the course tree, still sampled by duo matches and
+practice draws. That split is what keeps a lesson finishable: the bank holds
+~144k questions, a lesson holds ten.
 
 Writes directly through SQLAlchemy Core batched inserts instead of
 CourseContentService, whose per-row duplicate-order_index checks are meant
@@ -25,9 +35,10 @@ import argparse
 import asyncio
 import difflib
 import json
-from collections.abc import Iterable, Iterator
-from dataclasses import dataclass
+from collections.abc import Iterable, Iterator, Sequence
+from dataclasses import dataclass, field
 from pathlib import Path
+from random import Random
 from typing import Any
 from uuid import uuid4
 
@@ -47,10 +58,12 @@ DATA_DIR = Path(__file__).resolve().parent.parent / "data" / "quiz"
 COURSE_TITLE = "Ngân hàng câu hỏi"
 BATCH_SIZE = 5000
 BANK_LESSON_TITLE = "Ngân hàng câu hỏi"
-# Roughly Duolingo-sized: ~1000 lessons of ten questions across the whole course.
+# Roughly Duolingo-sized: 5 bands x 12 units x 20 lessons of ten questions.
 DEFAULT_CHALLENGES_PER_LESSON = 10
 DEFAULT_LESSONS_PER_UNIT = 20
-DEFAULT_UNITS_PER_GROUP = 3
+DEFAULT_MAX_UNITS_PER_BAND = 12
+# Fixed so two imports of the same data lay out the same path.
+DEFAULT_SEED = 20260831
 SKIPPED_LOG_PATH = DATA_DIR / "_import_skipped_common_error_corrections.json"
 PUNCT = " .,!?;:\"'"
 
@@ -63,23 +76,125 @@ DIFFICULTY_MAP = {
     "expert": ChallengeDifficulty.HARD,
 }
 
-TOPIC_GRAMMAR_FILL = "Ngữ pháp - Điền từ"
-TOPIC_READING = "Đọc hiểu"
-TOPIC_SENTENCE_BUILDER = "Ghép câu"
-TOPIC_TRUE_FALSE = "Sửa lỗi Đúng/Sai"
-TOPIC_EXPLANATIONS = "Ngữ pháp có giải thích"
-TOPIC_COMMON_ERROR = "Lỗi thường gặp"
-TOPIC_FIND_ERROR = "Tìm lỗi sai"
+# ---------------------------------------------------------------------------
+# Question kinds and TOEIC bands
+# ---------------------------------------------------------------------------
 
-ALL_TOPICS = [
-    TOPIC_GRAMMAR_FILL,
-    TOPIC_READING,
-    TOPIC_SENTENCE_BUILDER,
-    TOPIC_TRUE_FALSE,
-    TOPIC_EXPLANATIONS,
-    TOPIC_COMMON_ERROR,
-    TOPIC_FIND_ERROR,
-]
+KIND_MC4 = "mc4"
+KIND_READING = "reading"
+KIND_SENTENCE_BUILDER = "sentence_builder"
+KIND_TRUE_FALSE = "true_false"
+KIND_EXPLANATIONS = "explanations"
+KIND_COMMON_ERROR = "common_error"
+KIND_FIND_ERROR = "find_error"
+
+TOPIC_OF_KIND = {
+    KIND_MC4: "Ngữ pháp - Điền từ",
+    KIND_READING: "Đọc hiểu",
+    KIND_SENTENCE_BUILDER: "Ghép câu",
+    KIND_TRUE_FALSE: "Sửa lỗi Đúng/Sai",
+    KIND_EXPLANATIONS: "Ngữ pháp có giải thích",
+    KIND_COMMON_ERROR: "Lỗi thường gặp",
+    KIND_FIND_ERROR: "Tìm lỗi sai",
+}
+# Lesson titles: short enough that a path node reads as one glance.
+LABEL_OF_KIND = {
+    KIND_MC4: "Điền từ",
+    KIND_READING: "Đọc hiểu",
+    KIND_SENTENCE_BUILDER: "Ghép câu",
+    KIND_TRUE_FALSE: "Sửa lỗi Đ/S",
+    KIND_EXPLANATIONS: "Ngữ pháp",
+    KIND_COMMON_ERROR: "Lỗi thường gặp",
+    KIND_FIND_ERROR: "Tìm lỗi sai",
+}
+ALL_TOPICS = list(TOPIC_OF_KIND.values())
+
+
+@dataclass(frozen=True)
+class Band:
+    """One step of the path's score scale.
+
+    `members` maps a question kind to the single raw ``toeic_band`` value that
+    kind contributes here -- so a lesson stays pure in the *source* band too,
+    not just in the merged one.
+    """
+
+    key: str
+    label: str
+    members: tuple[tuple[str, str], ...]
+
+    @property
+    def kinds(self) -> tuple[str, ...]:
+        return tuple(kind for kind, _ in self.members)
+
+
+BANDS: tuple[Band, ...] = (
+    Band(
+        "B1",
+        "250-450",
+        (
+            (KIND_MC4, "120-350"),
+            (KIND_SENTENCE_BUILDER, "250-450"),
+            (KIND_TRUE_FALSE, "250-450"),
+        ),
+    ),
+    Band(
+        "B2",
+        "350-550",
+        (
+            (KIND_MC4, "350-450"),
+            (KIND_READING, "350-550"),
+        ),
+    ),
+    Band(
+        "B3",
+        "450-700",
+        (
+            (KIND_MC4, "450-650"),
+            (KIND_SENTENCE_BUILDER, "450-650"),
+            (KIND_TRUE_FALSE, "450-650"),
+            (KIND_COMMON_ERROR, "500-700"),
+        ),
+    ),
+    Band(
+        "B4",
+        "550-800",
+        (
+            (KIND_EXPLANATIONS, "550-750"),
+            (KIND_MC4, "650-800"),
+        ),
+    ),
+    Band(
+        "B5",
+        "650-990",
+        (
+            (KIND_FIND_ERROR, "650-850+"),
+            (KIND_READING, "650-850+"),
+            (KIND_SENTENCE_BUILDER, "650-850+"),
+            (KIND_TRUE_FALSE, "650-850+"),
+            (KIND_MC4, "800-990"),
+        ),
+    ),
+)
+
+BAND_INDEX: dict[tuple[str, str], Band] = {
+    (kind, raw_band): band for band in BANDS for kind, raw_band in band.members
+}
+
+CEFR_ORDER = {"A1": 1, "A2": 2, "B1": 3, "B2": 4, "C1": 5, "C2": 6}
+
+
+def _cefr_rank(cefr: str) -> tuple[int, int]:
+    """Sort key for a `cefr_level` like "A1", "A1-A2" or "B2-C1".
+
+    Decides which kind opens each round of a unit's kind cycle. It cannot
+    order questions *within* a kind: the source files carry one constant
+    cefr_level per (band, kind), so this is the only ordering it can supply.
+    """
+    parts = [CEFR_ORDER.get(part.strip(), 0) for part in cefr.split("-") if part.strip()]
+    if not parts:
+        return (0, 0)
+    return (parts[0], parts[-1])
 
 
 def load_json(name: str) -> Any:
@@ -134,17 +249,26 @@ def transform_multiple_choice_4options(
 def transform_reading_comprehension(
     rows: list[dict[str, Any]],
 ) -> Iterator[tuple[dict[str, Any], list[dict[str, Any]], dict[str, Any]]]:
+    # One dict per article, shared by its 3-4 questions: the raw JSON repeats
+    # the whole article on every row, and holding 97k copies of it while the
+    # path is being planned is the one thing that would blow this script's
+    # memory up.
+    passages: dict[str, dict[str, Any]] = {}
     for row in rows:
         options_map: dict[str, str] = row["options_map"]
         correct_key = row["correct_answer"]
         options = [
             {"text": text, "correct": key == correct_key} for key, text in options_map.items()
         ]
-        passage_info = {
-            "source_ref": row["example_id"],
-            "content": row["article"],
-            "level_grade": row["level_grade"],
-        }
+        source_ref = row["example_id"]
+        passage_info = passages.get(source_ref)
+        if passage_info is None:
+            passage_info = {
+                "source_ref": source_ref,
+                "content": row["article"],
+                "level_grade": row["level_grade"],
+            }
+            passages[source_ref] = passage_info
         yield (
             {
                 "type": ChallengeType.SELECT,
@@ -330,7 +454,217 @@ def transform_common_error_corrections(
 
 
 # ---------------------------------------------------------------------------
-# Driver
+# Collecting: source files -> per-band, per-kind pools
+# ---------------------------------------------------------------------------
+
+# One imported question: challenge fields, its options in display order, and
+# the passage it belongs to (reading comprehension only).
+SourceItem = tuple[dict[str, Any], list[dict[str, Any]], dict[str, Any] | None]
+
+
+def without_passages(
+    transform: Iterable[tuple[dict[str, Any], list[dict[str, Any]]]],
+) -> Iterator[SourceItem]:
+    for challenge_fields, option_dicts in transform:
+        yield challenge_fields, option_dicts, None
+
+
+@dataclass
+class KindPool:
+    """Every question of one kind inside one band."""
+
+    kind: str
+    cefr: str = ""
+    items: list[SourceItem] = field(default_factory=list)
+    # Filled by _pack_pool: lessons of exactly challenges_per_lesson questions,
+    # plus the questions that could not complete one.
+    lessons: list[list[SourceItem]] = field(default_factory=list)
+    leftover: list[SourceItem] = field(default_factory=list)
+
+
+BandPools = dict[str, dict[str, KindPool]]
+
+
+def _collect_pools(skipped_ids: list[int], unbanded: list[tuple[str, SourceItem]]) -> BandPools:
+    """Read every source file once, bucketing questions by (band, kind).
+
+    Files are loaded and released one at a time -- the reading corpus alone is
+    240 MB of JSON, and holding all five parts at once is the peak this avoids.
+    """
+    pools: BandPools = {band.key: {} for band in BANDS}
+
+    def add(kind: str, items: Iterator[SourceItem]) -> None:
+        for item in items:
+            fields = item[0]
+            band = BAND_INDEX.get((kind, fields["toeic_band"] or ""))
+            if band is None:
+                unbanded.append((kind, item))
+                continue
+            pool = pools[band.key].get(kind)
+            if pool is None:
+                pool = KindPool(kind=kind, cefr=fields["cefr_level"] or "")
+                pools[band.key][kind] = pool
+            pool.items.append(item)
+
+    rows = load_json("quiz_multiple_choice_4options.json")
+    add(KIND_MC4, without_passages(transform_multiple_choice_4options(rows)))
+    del rows
+
+    for part in range(1, 6):
+        rows = load_json(f"quiz_reading_comprehension_part{part}.json")
+        add(KIND_READING, transform_reading_comprehension(rows))
+        del rows
+
+    rows = load_json("quiz_sentence_builder.json")
+    add(KIND_SENTENCE_BUILDER, without_passages(transform_sentence_builder(rows)))
+    del rows
+
+    rows = load_json("quiz_true_false.json")
+    add(KIND_TRUE_FALSE, without_passages(transform_true_false(rows)))
+    del rows
+
+    explanations = load_json("quiz_with_explanations.json")
+    add(
+        KIND_EXPLANATIONS,
+        without_passages(transform_explanations_mcq(explanations["multiple_choice_quizzes"])),
+    )
+    add(
+        KIND_COMMON_ERROR,
+        without_passages(
+            transform_common_error_corrections(
+                explanations["common_error_corrections"], skipped_ids
+            )
+        ),
+    )
+    add(
+        KIND_FIND_ERROR,
+        without_passages(
+            transform_grammar_rules_find_error(explanations["grammar_rules_find_error"])
+        ),
+    )
+    del explanations
+
+    return pools
+
+
+# ---------------------------------------------------------------------------
+# Packing: pools -> lessons of exactly challenges_per_lesson questions
+# ---------------------------------------------------------------------------
+
+
+def _blocks(pool: KindPool) -> list[list[SourceItem]]:
+    """Groups of questions that must not be split across lessons.
+
+    Reading questions come in article-sized blocks of 1-7; every other kind is
+    one question per block, which lets one packer serve them all.
+    """
+    if pool.kind != KIND_READING:
+        return [[item] for item in pool.items]
+    by_passage: dict[str, list[SourceItem]] = {}
+    for item in pool.items:
+        passage_info = item[2]
+        assert passage_info is not None
+        by_passage.setdefault(passage_info["source_ref"], []).append(item)
+    return list(by_passage.values())
+
+
+def _pack_pool(pool: KindPool, per_lesson: int, rng: Random) -> None:
+    """Fill `pool.lessons` with lessons of exactly `per_lesson` questions.
+
+    Largest-block-first into the room a lesson has left, so an article is never
+    cut in half and a lesson never runs long: 4+3+3, 5+5, 4+4+2, and for the
+    single-question kinds simply ten in a row. Whatever cannot complete a
+    lesson becomes `pool.leftover` and goes to the band's bank lesson.
+    """
+    by_size: dict[int, list[list[SourceItem]]] = {}
+    for block in _blocks(pool):
+        if len(block) > per_lesson:
+            pool.leftover.extend(block)
+            continue
+        by_size.setdefault(len(block), []).append(block)
+    for blocks in by_size.values():
+        rng.shuffle(blocks)
+
+    while True:
+        lesson: list[SourceItem] = []
+        remaining = per_lesson
+        while remaining > 0:
+            size = max((s for s, blocks in by_size.items() if blocks and s <= remaining), default=0)
+            if size == 0:
+                break
+            lesson.extend(by_size[size].pop())
+            remaining -= size
+        if remaining:
+            # Nothing left small enough to close this lesson: the pool is spent.
+            pool.leftover.extend(lesson)
+            break
+        pool.lessons.append(lesson)
+
+    for blocks in by_size.values():
+        for block in blocks:
+            pool.leftover.extend(block)
+    pool.items = []
+
+
+# ---------------------------------------------------------------------------
+# Planning: how many units a band gets, and which kind each lesson is
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class PathLayout:
+    """The shape of the walkable path."""
+
+    challenges_per_lesson: int = DEFAULT_CHALLENGES_PER_LESSON
+    lessons_per_unit: int = DEFAULT_LESSONS_PER_UNIT
+    max_units_per_band: int = DEFAULT_MAX_UNITS_PER_BAND
+
+
+@dataclass(frozen=True)
+class BandPlan:
+    band: Band
+    units: int
+    kinds: tuple[str, ...]
+    lessons_per_kind: dict[str, int]
+
+    def unit_kind_order(self) -> list[str]:
+        """The kind of each lesson in one unit, cycling so neighbours differ."""
+        remaining = dict(self.lessons_per_kind)
+        order: list[str] = []
+        while any(remaining.values()):
+            for kind in self.kinds:
+                if remaining[kind]:
+                    order.append(kind)
+                    remaining[kind] -= 1
+        return order
+
+
+def _plan_band(band: Band, pools: dict[str, KindPool], layout: PathLayout) -> BandPlan:
+    """Split a unit's lessons between the band's kinds, then see how many such
+    units the scarcest kind can actually fill."""
+    kinds = tuple(sorted(pools, key=lambda kind: (_cefr_rank(pools[kind].cefr), kind)))
+    base, extra = divmod(layout.lessons_per_unit, len(kinds))
+    if base == 0:
+        raise SystemExit(
+            f"Band {band.label} has {len(kinds)} question kinds but --lessons-per-unit is "
+            f"{layout.lessons_per_unit}: a unit cannot hold one lesson of each."
+        )
+    lessons_per_kind = {kind: base + (1 if i < extra else 0) for i, kind in enumerate(kinds)}
+    units = min(
+        layout.max_units_per_band,
+        min(len(pools[kind].lessons) // lessons_per_kind[kind] for kind in kinds),
+    )
+    if units == 0:
+        scarcest = min(kinds, key=lambda kind: len(pools[kind].lessons))
+        raise SystemExit(
+            f"Band {band.label} cannot fill a single unit: {scarcest} only yields "
+            f"{len(pools[scarcest].lessons)} lesson(s), {lessons_per_kind[scarcest]} needed."
+        )
+    return BandPlan(band=band, units=units, kinds=kinds, lessons_per_kind=lessons_per_kind)
+
+
+# ---------------------------------------------------------------------------
+# Writing
 # ---------------------------------------------------------------------------
 
 
@@ -392,162 +726,29 @@ async def _get_or_create_topics(session: AsyncSession) -> dict[str, str]:
     return topics
 
 
-@dataclass(frozen=True)
-class PathLayout:
-    """How much of a source group becomes walkable path, and in what shape."""
-
-    challenges_per_lesson: int = DEFAULT_CHALLENGES_PER_LESSON
-    lessons_per_unit: int = DEFAULT_LESSONS_PER_UNIT
-    units_per_group: int = DEFAULT_UNITS_PER_GROUP
-
-    @property
-    def path_capacity(self) -> int:
-        """Challenges a single group may contribute to the path. Everything the
-        group holds beyond this lands in its bank lesson."""
-        return self.challenges_per_lesson * self.lessons_per_unit * self.units_per_group
-
-
 @dataclass
-class GroupStats:
+class BandStats:
     units: int = 0
     path_lessons: int = 0
     path_challenges: int = 0
     bank_challenges: int = 0
-    passages: int = 0
+    kinds: int = 0
 
     @property
     def total_challenges(self) -> int:
         return self.path_challenges + self.bank_challenges
 
 
-# One imported question: challenge fields, its options in display order, and
-# the passage it belongs to (reading comprehension only).
-SourceItem = tuple[dict[str, Any], list[dict[str, Any]], dict[str, Any] | None]
+class _ChallengeWriter:
+    """Batched writer for challenges, their options and reading passages."""
 
-
-def without_passages(
-    transform: Iterable[tuple[dict[str, Any], list[dict[str, Any]]]],
-) -> Iterator[SourceItem]:
-    for challenge_fields, option_dicts in transform:
-        yield challenge_fields, option_dicts, None
-
-
-class _GroupWriter:
-    """Streams one source group into path lessons, then into a bank lesson.
-
-    Single pass: units and lessons are created as they fill up, so the caller
-    never has to know a group's size up front. Once `path_capacity` challenges
-    have been placed, everything remaining goes to the bank lesson.
-    """
-
-    def __init__(
-        self,
-        session: AsyncSession,
-        course_id: str,
-        title: str,
-        description: str,
-        topic_id: str,
-        layout: PathLayout,
-        first_unit_order: int,
-    ) -> None:
+    def __init__(self, session: AsyncSession, topics: dict[str, str]) -> None:
         self.session = session
-        self.course_id = course_id
-        self.title = title
-        self.description = description
-        self.topic_id = topic_id
-        self.layout = layout
-        self.next_unit_order = first_unit_order
-
-        self.stats = GroupStats()
+        self.topics = topics
         self.batch = Batch()
         self.passage_batch: list[dict[str, Any]] = []
         self.passage_cache: dict[str, str] = {}
-
-        self.unit_ids: list[str] = []
-        self.lesson_id: str | None = None
-        self.lesson_fill = 0
-        self.path_open = True
-        self.bank_lesson_id: str | None = None
-        # Sentinel: no passage seen yet, so the first item is a passage boundary.
-        self.current_passage_ref: str | None = ""
-
-    # --- Structure ----------------------------------------------------------
-
-    async def _create_unit(self) -> str:
-        unit_id = str(uuid4())
-        index = len(self.unit_ids) + 1
-        title = self.title if self.layout.units_per_group == 1 else f"{self.title} · Chặng {index}"
-        await self.session.execute(
-            insert(Unit),
-            [
-                {
-                    "id": unit_id,
-                    "course_id": self.course_id,
-                    "title": title[:100],
-                    "description": self.description,
-                    "order_index": self.next_unit_order,
-                }
-            ],
-        )
-        await self.session.commit()
-        self.unit_ids.append(unit_id)
-        self.next_unit_order += 1
-        self.stats.units += 1
-        return unit_id
-
-    async def _open_path_lesson(self) -> bool:
-        """Start the next path lesson. False once the group's path budget is spent."""
-        if self.stats.path_challenges >= self.layout.path_capacity:
-            return False
-        if self.stats.path_lessons % self.layout.lessons_per_unit == 0:
-            await self._create_unit()
-
-        order_in_unit = self.stats.path_lessons % self.layout.lessons_per_unit + 1
-        lesson_id = str(uuid4())
-        await self.session.execute(
-            insert(Lesson),
-            [
-                {
-                    "id": lesson_id,
-                    "unit_id": self.unit_ids[-1],
-                    "title": f"Cửa {order_in_unit}",
-                    "order_index": order_in_unit,
-                    "is_bank": False,
-                }
-            ],
-        )
-        await self.session.commit()
-        self.lesson_id = lesson_id
-        self.lesson_fill = 0
-        self.stats.path_lessons += 1
-        return True
-
-    async def _open_bank_lesson(self) -> str:
-        """The group's overflow lesson, created on first use.
-
-        It sits in the group's last unit at an order_index past every path
-        lesson, so it can never collide with one.
-        """
-        if self.bank_lesson_id is None:
-            if not self.unit_ids:
-                await self._create_unit()
-            self.bank_lesson_id = str(uuid4())
-            await self.session.execute(
-                insert(Lesson),
-                [
-                    {
-                        "id": self.bank_lesson_id,
-                        "unit_id": self.unit_ids[-1],
-                        "title": BANK_LESSON_TITLE,
-                        "order_index": self.layout.lessons_per_unit + 1,
-                        "is_bank": True,
-                    }
-                ],
-            )
-            await self.session.commit()
-        return self.bank_lesson_id
-
-    # --- Content ------------------------------------------------------------
+        self.passages = 0
 
     def _passage_id(self, passage_info: dict[str, Any] | None) -> str | None:
         if passage_info is None:
@@ -565,39 +766,16 @@ class _GroupWriter:
                     "level_grade": passage_info["level_grade"],
                 }
             )
-            self.stats.passages += 1
+            self.passages += 1
         return passage_id
 
-    async def add(self, item: SourceItem) -> None:
+    async def add(self, item: SourceItem, kind: str, lesson_id: str, order_index: int) -> None:
         challenge_fields, option_dicts, passage_info = item
-        passage_ref = passage_info["source_ref"] if passage_info is not None else None
-        # A reading passage's questions must stay in one lesson, so a lesson can
-        # only roll over at a passage boundary -- which lets a reading lesson run
-        # a little past challenges_per_lesson rather than splitting an article.
-        at_passage_boundary = passage_ref is None or passage_ref != self.current_passage_ref
-        self.current_passage_ref = passage_ref
-
-        needs_lesson = self.lesson_id is None or (
-            self.lesson_fill >= self.layout.challenges_per_lesson and at_passage_boundary
-        )
-        if self.path_open and needs_lesson:
-            self.path_open = await self._open_path_lesson()
-
-        if self.path_open:
-            lesson_id = self.lesson_id
-            self.lesson_fill += 1
-            self.stats.path_challenges += 1
-            order_index = self.lesson_fill
-        else:
-            lesson_id = await self._open_bank_lesson()
-            self.stats.bank_challenges += 1
-            order_index = self.stats.bank_challenges
-
         self.batch.add(
             {
                 "id": str(uuid4()),
                 "lesson_id": lesson_id,
-                "topic_id": self.topic_id,
+                "topic_id": self.topics[TOPIC_OF_KIND[kind]],
                 "passage_id": self._passage_id(passage_info),
                 "order_index": order_index,
                 **challenge_fields,
@@ -618,173 +796,134 @@ class _GroupWriter:
         await _flush(self.session, self.batch)
 
 
-async def import_group(
+async def import_band(
     session: AsyncSession,
+    writer: _ChallengeWriter,
     course_id: str,
-    title: str,
-    description: str,
-    topic_id: str,
-    items: Iterable[SourceItem],
+    plan: BandPlan,
+    pools: dict[str, KindPool],
     layout: PathLayout,
     first_unit_order: int,
-) -> GroupStats:
-    writer = _GroupWriter(
-        session, course_id, title, description, topic_id, layout, first_unit_order
+    extra_bank_items: Sequence[tuple[str, SourceItem]] = (),
+) -> BandStats:
+    """Write one band: its units, their lessons, and the band's bank lesson."""
+    band = plan.band
+    stats = BandStats(units=plan.units, kinds=len(plan.kinds))
+    cefr_low = min(pools[kind].cefr for kind in plan.kinds)
+    cefr_high = max(pools[kind].cefr for kind in plan.kinds)
+    cefr_span = cefr_low.split("-")[0]
+    if cefr_high.split("-")[-1] != cefr_span:
+        cefr_span = f"{cefr_span}-{cefr_high.split('-')[-1]}"
+    description = (
+        f"TOEIC {band.label} · CEFR {cefr_span} · "
+        f"{', '.join(LABEL_OF_KIND[kind] for kind in plan.kinds)}"
     )
-    for item in items:
-        await writer.add(item)
+
+    unit_rows: list[dict[str, Any]] = []
+    lesson_rows: list[dict[str, Any]] = []
+    # (lesson_id, kind) in the order their questions must be written.
+    slots: list[tuple[str, str]] = []
+    kind_lesson_number = dict.fromkeys(plan.kinds, 0)
+
+    for unit_number in range(1, plan.units + 1):
+        unit_id = str(uuid4())
+        unit_rows.append(
+            {
+                "id": unit_id,
+                "course_id": course_id,
+                "title": f"TOEIC {band.label} · Chặng {unit_number}"[:100],
+                "description": description,
+                "order_index": first_unit_order + unit_number - 1,
+            }
+        )
+        for order_in_unit, kind in enumerate(plan.unit_kind_order(), start=1):
+            lesson_id = str(uuid4())
+            kind_lesson_number[kind] += 1
+            lesson_rows.append(
+                {
+                    "id": lesson_id,
+                    "unit_id": unit_id,
+                    "title": f"{LABEL_OF_KIND[kind]} {kind_lesson_number[kind]}"[:100],
+                    "order_index": order_in_unit,
+                    "is_bank": False,
+                }
+            )
+            slots.append((lesson_id, kind))
+            stats.path_lessons += 1
+
+    # The band's overflow lesson sits in its last unit, past every path lesson.
+    bank_lesson_id = str(uuid4())
+    lesson_rows.append(
+        {
+            "id": bank_lesson_id,
+            "unit_id": unit_rows[-1]["id"],
+            "title": BANK_LESSON_TITLE,
+            "order_index": layout.lessons_per_unit + 1,
+            "is_bank": True,
+        }
+    )
+
+    await session.execute(insert(Unit), unit_rows)
+    await session.execute(insert(Lesson), lesson_rows)
+    await session.commit()
+
+    lesson_cursor = dict.fromkeys(plan.kinds, 0)
+    for lesson_id, kind in slots:
+        pool = pools[kind]
+        for order_index, item in enumerate(pool.lessons[lesson_cursor[kind]], start=1):
+            await writer.add(item, kind, lesson_id, order_index)
+            stats.path_challenges += 1
+        lesson_cursor[kind] += 1
+
+    bank_order = 0
+    for kind, pool in pools.items():
+        for lesson in pool.lessons[lesson_cursor[kind] :]:
+            for item in lesson:
+                bank_order += 1
+                await writer.add(item, kind, bank_lesson_id, bank_order)
+        for item in pool.leftover:
+            bank_order += 1
+            await writer.add(item, kind, bank_lesson_id, bank_order)
+        pool.lessons = []
+        pool.leftover = []
+    for kind, item in extra_bank_items:
+        bank_order += 1
+        await writer.add(item, kind, bank_lesson_id, bank_order)
+    stats.bank_challenges = bank_order
+
     await writer.flush()
-    return writer.stats
+    return stats
 
 
-@dataclass
-class SourceGroup:
-    """One source file (or one part of one) laid out as its own stretch of path."""
-
-    title: str
-    description: str
-    topic_id: str
-    items: Iterable[SourceItem]
-    label: str = ""
-    extra: str = ""
-
-    def __post_init__(self) -> None:
-        if not self.label:
-            self.label = self.title
-
-
-def _build_groups(topics: dict[str, str], skipped_ids: list[int]) -> list[SourceGroup]:
-    """Every source group in path order, easiest sources first."""
-    groups: list[SourceGroup] = []
-
-    # 1-5: multiple_choice_4options, one group per part_name (A1 -> C2).
-    mc4_by_part: dict[str, list[dict[str, Any]]] = {}
-    for row in load_json("quiz_multiple_choice_4options.json"):
-        mc4_by_part.setdefault(row["part_name"], []).append(row)
-    for part_name in sorted(mc4_by_part, key=lambda p: mc4_by_part[p][0]["part"]):
-        rows = mc4_by_part[part_name]
-        groups.append(
-            SourceGroup(
-                title=f"Ngữ pháp - Điền từ ({part_name})",
-                description=part_name,
-                topic_id=topics[TOPIC_GRAMMAR_FILL],
-                items=without_passages(transform_multiple_choice_4options(rows)),
-                label=part_name,
-            )
-        )
-
-    # 6-7: reading comprehension, split into Middle/High grade groups.
-    reading_rows: list[dict[str, Any]] = []
-    for i in range(1, 6):
-        reading_rows.extend(load_json(f"quiz_reading_comprehension_part{i}.json"))
-    for level_grade, level_label in (("middle", "Middle Grade"), ("high", "High Grade")):
-        rows = [row for row in reading_rows if row["level_grade"] == level_grade]
-        groups.append(
-            SourceGroup(
-                title=f"Đọc hiểu - {level_label}",
-                description=f"Reading comprehension - {level_label}",
-                topic_id=topics[TOPIC_READING],
-                items=transform_reading_comprehension(rows),
-            )
-        )
-
-    # 8-10: sentence builder, one group per part_name.
-    sb_by_part: dict[str, list[dict[str, Any]]] = {}
-    for row in load_json("quiz_sentence_builder.json"):
-        sb_by_part.setdefault(row["part_name"], []).append(row)
-    for part_name, rows in sb_by_part.items():
-        groups.append(
-            SourceGroup(
-                title=f"Ghép câu - {part_name}",
-                description=part_name,
-                topic_id=topics[TOPIC_SENTENCE_BUILDER],
-                items=without_passages(transform_sentence_builder(rows)),
-                label=part_name,
-            )
-        )
-
-    # 11-13: true/false, one group per part_name.
-    tf_by_part: dict[str, list[dict[str, Any]]] = {}
-    for row in load_json("quiz_true_false.json"):
-        tf_by_part.setdefault(row["part_name"], []).append(row)
-    for part_name, rows in tf_by_part.items():
-        groups.append(
-            SourceGroup(
-                title=f"Sửa lỗi Đúng/Sai - {part_name}",
-                description=part_name,
-                topic_id=topics[TOPIC_TRUE_FALSE],
-                items=without_passages(transform_true_false(rows)),
-                label=part_name,
-            )
-        )
-
-    # 14-16: quiz_with_explanations.json (3 sub-kinds).
-    explanations = load_json("quiz_with_explanations.json")
-    groups.append(
-        SourceGroup(
-            title="Ngữ pháp có giải thích",
-            description="Rules Quiz with Explanations",
-            topic_id=topics[TOPIC_EXPLANATIONS],
-            items=without_passages(
-                transform_explanations_mcq(explanations["multiple_choice_quizzes"])
-            ),
-        )
-    )
-    groups.append(
-        SourceGroup(
-            title="Lỗi thường gặp",
-            description="Common Mistakes in English",
-            topic_id=topics[TOPIC_COMMON_ERROR],
-            items=without_passages(
-                transform_common_error_corrections(
-                    explanations["common_error_corrections"], skipped_ids
-                )
-            ),
-        )
-    )
-    groups.append(
-        SourceGroup(
-            title="Tìm lỗi sai",
-            description="Error Identification Rules",
-            topic_id=topics[TOPIC_FIND_ERROR],
-            items=without_passages(
-                transform_grammar_rules_find_error(explanations["grammar_rules_find_error"])
-            ),
-        )
-    )
-    return groups
-
-
-def _print_summary(rows: list[tuple[str, GroupStats]], layout: PathLayout) -> None:
+def _print_summary(rows: list[tuple[Band, BandStats]], layout: PathLayout) -> None:
     print(
-        f"\nImport summary (path: {layout.units_per_group} unit(s) x "
+        f"\nImport summary (path: up to {layout.max_units_per_band} unit(s) x "
         f"{layout.lessons_per_unit} lesson(s) x {layout.challenges_per_lesson} question(s) "
-        f"per source group):"
+        f"per TOEIC band):"
     )
-    print(f"  {'group':<46}{'units':>6}{'lessons':>9}{'path Q':>9}{'bank Q':>10}")
-    totals = GroupStats()
-    for label, stats in rows:
+    print(f"  {'band':<20}{'kinds':>6}{'units':>6}{'lessons':>9}{'path Q':>9}{'bank Q':>10}")
+    totals = BandStats()
+    for band, stats in rows:
         print(
-            f"  {label[:45]:<46}{stats.units:>6}{stats.path_lessons:>9}"
-            f"{stats.path_challenges:>9}{stats.bank_challenges:>10}"
+            f"  {'TOEIC ' + band.label:<20}{stats.kinds:>6}{stats.units:>6}"
+            f"{stats.path_lessons:>9}{stats.path_challenges:>9}{stats.bank_challenges:>10}"
         )
         totals.units += stats.units
         totals.path_lessons += stats.path_lessons
         totals.path_challenges += stats.path_challenges
         totals.bank_challenges += stats.bank_challenges
-        totals.passages += stats.passages
     print(
-        f"  {'TOTAL':<46}{totals.units:>6}{totals.path_lessons:>9}"
+        f"  {'TOTAL':<20}{'':>6}{totals.units:>6}{totals.path_lessons:>9}"
         f"{totals.path_challenges:>9}{totals.bank_challenges:>10}"
     )
     print(
-        f"\n  {totals.total_challenges} challenges, {totals.passages} passages. "
-        f"{totals.path_challenges} of them sit on the walkable path; the rest stay in "
-        f"bank lessons, reachable through duo matches and lesson quizzes."
+        f"\n  {totals.total_challenges} challenges. {totals.path_challenges} of them sit on "
+        f"the walkable path, lowest band first; the rest stay in bank lessons, reachable "
+        f"through duo matches and lesson quizzes."
     )
 
 
-async def main(reset: bool, layout: PathLayout) -> None:
+async def main(reset: bool, layout: PathLayout, seed: int) -> None:
     async with AsyncSessionFactory() as session:
         result = await session.execute(select(Course).where(Course.title == COURSE_TITLE))
         course = result.scalar_one_or_none()
@@ -818,31 +957,49 @@ async def main(reset: bool, layout: PathLayout) -> None:
         await session.commit()
 
         skipped_ids: list[int] = []
-        summary: list[tuple[str, GroupStats]] = []
-        next_unit_order = 1
+        unbanded: list[tuple[str, SourceItem]] = []
+        print("Reading source files...")
+        pools = _collect_pools(skipped_ids, unbanded)
 
-        for group in _build_groups(topics, skipped_ids):
-            stats = await import_group(
+        rng = Random(seed)  # noqa: S311 -- picking quiz questions, not security
+        for band in BANDS:
+            for pool in pools[band.key].values():
+                _pack_pool(pool, layout.challenges_per_lesson, rng)
+
+        writer = _ChallengeWriter(session, topics)
+        summary: list[tuple[Band, BandStats]] = []
+        next_unit_order = 1
+        for band in BANDS:
+            plan = _plan_band(band, pools[band.key], layout)
+            # A source band no entry in BANDS covers is still imported: it rides
+            # along in the last band's bank lesson rather than being dropped.
+            extra = unbanded if band is BANDS[-1] else []
+            stats = await import_band(
                 session,
+                writer,
                 course_id,
-                group.title,
-                group.description,
-                group.topic_id,
-                group.items,
+                plan,
+                pools[band.key],
                 layout,
                 next_unit_order,
+                extra,
             )
             next_unit_order += stats.units
-            label = group.label
-            if stats.passages:
-                label = f"{label} ({stats.passages} passages)"
-            summary.append((label, stats))
-            print(f"  imported {label}: {stats.total_challenges} challenges")
+            summary.append((band, stats))
+            print(
+                f"  imported TOEIC {band.label}: {stats.units} units, "
+                f"{stats.total_challenges} challenges"
+            )
+
+        if unbanded:
+            print(f"  {len(unbanded)} question(s) outside every band -> last band's bank lesson")
+        await writer.flush()
 
         if skipped_ids:
             SKIPPED_LOG_PATH.write_text(json.dumps(skipped_ids, indent=2), encoding="utf-8")
 
         _print_summary(summary, layout)
+        print(f"  {writer.passages} reading passages.")
         if skipped_ids:
             print(
                 f"\n{len(skipped_ids)} common_error_corrections rows skipped "
@@ -872,13 +1029,19 @@ if __name__ == "__main__":
         help="Path lessons in one unit (default: %(default)s).",
     )
     parser.add_argument(
-        "--units-per-group",
+        "--max-units-per-band",
         type=int,
-        default=DEFAULT_UNITS_PER_GROUP,
+        default=DEFAULT_MAX_UNITS_PER_BAND,
         help=(
-            "Units one source file contributes to the path; everything past that "
+            "Units one TOEIC band contributes to the path; everything past that "
             "goes to its bank lesson (default: %(default)s)."
         ),
+    )
+    parser.add_argument(
+        "--seed",
+        type=int,
+        default=DEFAULT_SEED,
+        help="Seed for the shuffle that picks questions (default: %(default)s).",
     )
     args = parser.parse_args()
     asyncio.run(
@@ -887,7 +1050,8 @@ if __name__ == "__main__":
             layout=PathLayout(
                 challenges_per_lesson=args.challenges_per_lesson,
                 lessons_per_unit=args.lessons_per_unit,
-                units_per_group=args.units_per_group,
+                max_units_per_band=args.max_units_per_band,
             ),
+            seed=args.seed,
         )
     )
