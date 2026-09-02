@@ -15,7 +15,8 @@ from app.models.duo.duo_match import DuoMatchEndReason, DuoMatchMode
 from app.models.game.game_item import ItemRarity
 from app.models.game.skill import SkillEffect
 from app.schemas.content.course_content import ChallengePublicRead
-from app.schemas.duo.duo import DuoPlayerRead, DuoSettingsRead, DuoSettingsRequest
+from app.schemas.duo.duo import DuoSettingsRead, DuoSettingsRequest
+from app.schemas.game.player_card import PlayerCardRead
 from app.services.duo.combat import StrikeKind
 from app.services.duo.scoring import MatchOutcome
 from app.services.game.season import RankTier
@@ -119,7 +120,7 @@ class ChatSendPayload(BaseModel):
 
 
 class ConnectedData(BaseModel):
-    user: DuoPlayerRead
+    user: PlayerCardRead
     active_match_id: str | None
 
 
@@ -138,7 +139,7 @@ class MatchFoundData(BaseModel):
     match_id: str
     room_code: str | None
     mode: DuoMatchMode
-    opponent: DuoPlayerRead
+    opponent: PlayerCardRead
     settings: DuoSettingsRead
     host_id: str
     auto_start: bool
@@ -209,7 +210,7 @@ class MatchResumeData(BaseModel):
     """Everything a reconnecting client needs to rebuild its screen."""
 
     match_id: str
-    opponent: DuoPlayerRead
+    opponent: PlayerCardRead
     settings: DuoSettingsRead
     round_index: int
     total_rounds: int

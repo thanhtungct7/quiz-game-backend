@@ -40,6 +40,7 @@ from app.services.duo.loadout_builder import LoadoutBuilder
 from app.services.duo.scoring import MatchOutcome
 from app.services.duo.state import LiveMatch, MatchSettings, RoundRecord
 from app.services.game.energy_service import EnergyService
+from app.services.game.player_card import PlayerStanding, standing_of
 from app.services.game.rewards import RewardInput
 from app.services.game.settlement import (
     ExpAward,
@@ -103,7 +104,7 @@ class MatchRewards:
 class DuoPersistence(Protocol):
     """What the engine needs from storage. Tests substitute a fake."""
 
-    async def load_rating(self, user_id: str) -> int: ...
+    async def load_standing(self, user_id: str) -> PlayerStanding: ...
 
     async def draw_questions(self, settings: MatchSettings) -> QuizSetWithAnswers: ...
 
@@ -130,10 +131,19 @@ def elo_score(outcome: MatchOutcome) -> float:
 
 
 class DatabaseDuoPersistence:
-    async def load_rating(self, user_id: str) -> int:
+    async def load_standing(self, user_id: str) -> PlayerStanding:
+        """Everything on a player's card except their identity, in one session.
+
+        Read at the door -- opening a socket, queueing, creating or joining a
+        room -- rather than per round: a card is a snapshot, and the two rows
+        behind it only move when a match settles.
+        """
         async with AsyncSessionFactory() as db:
             record = await DuoRatingRepository(db).get_by_user(user_id)
-            return record.rating if record is not None else DEFAULT_RATING
+            profile = await GameProfileRepository(db).get_by_user(user_id)
+            return standing_of(
+                profile, record.rating if record is not None else DEFAULT_RATING
+            )
 
     async def draw_questions(self, settings: MatchSettings) -> QuizSetWithAnswers:
         async with AsyncSessionFactory() as db:

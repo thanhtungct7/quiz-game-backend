@@ -23,6 +23,7 @@ from app.services.duo.persistence import (
 from app.services.duo.registry import DuoRegistry
 from app.services.duo.scoring import MatchOutcome
 from app.services.duo.state import LiveMatch, MatchSettings
+from app.services.game.player_card import PlayerStanding
 from app.services.game.settlement import ExpAward, GoldAward
 
 TIME_PER_QUESTION = 1
@@ -74,6 +75,9 @@ class FakePersistence:
     def __init__(self, question_count: int = QUESTION_COUNT) -> None:
         self.question_count = question_count
         self.ratings: dict[str, int] = {}
+        # Full standing override, for the tests that care about what a
+        # player's card says rather than just their rating.
+        self.standings: dict[str, PlayerStanding] = {}
         self.created: list[LiveMatch] = []
         self.saved: list[tuple[LiveMatch, MatchResult]] = []
         self.cancelled: list[LiveMatch] = []
@@ -85,9 +89,11 @@ class FakePersistence:
         # without standing up the whole catalog.
         self.loadouts: dict[str, PlayerLoadout] = {}
 
-    async def load_rating(self, user_id: str) -> int:
+    async def load_standing(self, user_id: str) -> PlayerStanding:
         await asyncio.sleep(0)
-        return self.ratings.get(user_id, 1000)
+        return self.standings.get(
+            user_id, PlayerStanding(rating=self.ratings.get(user_id, 1000))
+        )
 
     async def draw_questions(self, settings: MatchSettings) -> QuizSetWithAnswers:
         await asyncio.sleep(0)

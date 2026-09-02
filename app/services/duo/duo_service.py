@@ -15,16 +15,17 @@ from app.models.auth.user import User
 from app.models.duo.duo_match import DuoMatch, DuoMatchStatus
 from app.models.duo.duo_match_round import DuoMatchRound
 from app.models.duo.duo_rating import DEFAULT_RATING
+from app.models.game.user_game_profile import UserGameProfile
 from app.repository.content.challenge_repository import ChallengeRepository
 from app.repository.duo.duo_match_repository import DuoMatchRepository
 from app.repository.duo.duo_rating_repository import DuoRatingRepository
+from app.repository.game.game_profile_repository import GameProfileRepository
 from app.repository.game.season_repository import SeasonRepository
 from app.schemas.duo.duo import (
     DuoLeaderboardEntry,
     DuoLeaderboardRead,
     DuoMatchDetail,
     DuoMatchSummary,
-    DuoPlayerRead,
     DuoRoomPreview,
     DuoRoundRead,
     DuoSkillUseRead,
@@ -35,6 +36,7 @@ from app.services.auth.avatar_url import resolve_avatar_url
 from app.services.duo.registry import DuoRegistry
 from app.services.duo.registry import registry as default_registry
 from app.services.duo.scoring import MatchOutcome
+from app.services.game.player_card import build_player_card, standing_of
 from app.services.game.season import tier_for_rating
 
 
@@ -44,12 +46,16 @@ class DuoService:
         matches: DuoMatchRepository,
         ratings: DuoRatingRepository,
         challenges: ChallengeRepository,
+        profiles: GameProfileRepository,
         registry: DuoRegistry | None = None,
         seasons: SeasonRepository | None = None,
     ) -> None:
         self.matches = matches
         self.ratings = ratings
         self.challenges = challenges
+        # Required, not optional: without it every opponent on the history
+        # page would silently read as a level-1 player with no class.
+        self.profiles = profiles
         self.registry = registry or default_registry
         # Optional: without it the leaderboard simply serves the all-time board.
         self.seasons = seasons
@@ -67,7 +73,11 @@ class DuoService:
         ]
         opponents = await self.ratings.users_by_ids(opponent_ids)
         ratings = await self.ratings.ratings_by_user_ids(opponent_ids)
-        return [_to_summary(record, user_id, opponents, ratings) for record in records]
+        profiles = await self.profiles.profiles_by_user_ids(opponent_ids)
+        return [
+            _to_summary(record, user_id, opponents, ratings, profiles)
+            for record in records
+        ]
 
     async def get_match(self, user_id: str, match_id: str) -> DuoMatchDetail:
         """Full round-by-round breakdown of one match.
@@ -85,6 +95,7 @@ class DuoService:
         opponent_ids = [opponent_id] if (opponent_id := _opponent_id(record, user_id)) else []
         opponents = await self.ratings.users_by_ids(opponent_ids)
         ratings = await self.ratings.ratings_by_user_ids(opponent_ids)
+        profiles = await self.profiles.profiles_by_user_ids(opponent_ids)
 
         challenge_ids = [
             entry.challenge_id for entry in record.rounds if entry.challenge_id is not None
@@ -94,7 +105,7 @@ class DuoService:
             for challenge in await self.challenges.list_by_ids(challenge_ids)
         }
 
-        summary = _to_summary(record, user_id, opponents, ratings)
+        summary = _to_summary(record, user_id, opponents, ratings, profiles)
         is_player_one = record.player_one_id == user_id
         return DuoMatchDetail(
             **summary.model_dump(),
@@ -245,6 +256,7 @@ def _to_summary(
     user_id: str,
     opponents: dict[str, User],
     ratings: dict[str, int],
+    profiles: dict[str, UserGameProfile],
 ) -> DuoMatchSummary:
     is_player_one = record.player_one_id == user_id
     opponent_id = _opponent_id(record, user_id)
@@ -256,11 +268,14 @@ def _to_summary(
         end_reason=record.end_reason,
         outcome=_outcome_for(record, user_id),
         opponent=(
-            DuoPlayerRead(
-                id=opponent_user.id,
+            build_player_card(
+                user_id=opponent_user.id,
                 username=opponent_user.username,
                 avatar_url=resolve_avatar_url(opponent_user, settings),
-                rating=ratings.get(opponent_user.id, DEFAULT_RATING),
+                standing=standing_of(
+                    profiles.get(opponent_user.id),
+                    ratings.get(opponent_user.id, DEFAULT_RATING),
+                ),
             )
             if opponent_user is not None
             else None

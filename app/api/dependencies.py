@@ -219,6 +219,7 @@ def get_duo_service(db: DatabaseSession) -> DuoService:
         matches=DuoMatchRepository(db),
         ratings=DuoRatingRepository(db),
         challenges=ChallengeRepository(db),
+        profiles=GameProfileRepository(db),
         seasons=SeasonRepository(db),
     )
 

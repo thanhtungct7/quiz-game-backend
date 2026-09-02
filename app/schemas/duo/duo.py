@@ -5,6 +5,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from app.models.content.challenge import ChallengeDifficulty
 from app.models.duo.duo_match import DuoMatchEndReason, DuoMatchMode, DuoMatchStatus
+from app.schemas.game.player_card import PlayerCardRead
 from app.services.duo.scoring import MatchOutcome
 from app.services.game.season import RankTier
 
@@ -37,13 +38,6 @@ class DuoSettingsRead(BaseModel):
     difficulty: ChallengeDifficulty | None
 
 
-class DuoPlayerRead(BaseModel):
-    id: str
-    username: str | None
-    avatar_url: str | None
-    rating: int
-
-
 class DuoMatchSummary(BaseModel):
     """One row of a player's match history, told from that player's side."""
 
@@ -52,7 +46,7 @@ class DuoMatchSummary(BaseModel):
     status: DuoMatchStatus
     end_reason: DuoMatchEndReason | None
     outcome: MatchOutcome | None
-    opponent: DuoPlayerRead | None
+    opponent: PlayerCardRead | None
     my_score: int
     opponent_score: int
     my_correct: int
@@ -138,6 +132,6 @@ class DuoRoomPreview(BaseModel):
     """What a player sees before committing to join a friend room."""
 
     room_code: str
-    host: DuoPlayerRead
+    host: PlayerCardRead
     settings: DuoSettingsRead
     player_count: int

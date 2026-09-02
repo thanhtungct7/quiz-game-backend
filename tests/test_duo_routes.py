@@ -24,13 +24,14 @@ from app.schemas.duo.duo import (
     DuoLeaderboardRead,
     DuoMatchDetail,
     DuoMatchSummary,
-    DuoPlayerRead,
     DuoRoomPreview,
     DuoSettingsRead,
     DuoStatsRead,
     LeaderboardScope,
 )
+from app.schemas.game.player_card import PlayerCardRead
 from app.services.duo.scoring import MatchOutcome
+from app.services.game.season import RankTier
 
 
 def _make_user() -> User:
@@ -44,8 +45,15 @@ def _summary() -> DuoMatchSummary:
         status=DuoMatchStatus.FINISHED,
         end_reason=None,
         outcome=MatchOutcome.WIN,
-        opponent=DuoPlayerRead(
-            id="user-2", username="rival", avatar_url=None, rating=1080
+        opponent=PlayerCardRead(
+            id="user-2",
+            username="rival",
+            avatar_url=None,
+            rating=1080,
+            tier=RankTier.BRONZE,
+            level=7,
+            class_code="MAGE",
+            day_streak=3,
         ),
         my_score=4200,
         opponent_score=3100,
@@ -243,7 +251,16 @@ async def test_preview_room_upper_cases_the_code_before_lookup() -> None:
     service = FakeDuoService(
         room=DuoRoomPreview(
             room_code="AB12CD",
-            host=DuoPlayerRead(id="user-2", username="host", avatar_url=None, rating=1000),
+            host=PlayerCardRead(
+                id="user-2",
+                username="host",
+                avatar_url=None,
+                rating=1000,
+                tier=RankTier.BRONZE,
+                level=1,
+                class_code=None,
+                day_streak=0,
+            ),
             settings=DuoSettingsRead(
                 question_count=10, time_per_question=15, topic_ids=None, difficulty=None
             ),

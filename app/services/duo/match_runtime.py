@@ -121,7 +121,7 @@ class DuoEngine:
         """Greet a freshly authenticated socket and re-attach it if the user
         dropped out of a match that is still running."""
         match = self.registry.match_of_user(user.id)
-        rating = await self.persistence.load_rating(user.id)
+        standing = await self.persistence.load_standing(user.id)
         await _send(
             websocket,
             ServerEvent.CONNECTED,
@@ -130,7 +130,7 @@ class DuoEngine:
                     user_id=user.id,
                     username=user.username,
                     avatar_url=resolve_avatar_url(user, app_settings),
-                    rating=rating,
+                    standing=standing,
                 ).to_read(),
                 active_match_id=match.match_id if match is not None else None,
             ),
@@ -229,10 +229,10 @@ class DuoEngine:
         The lookup and match creation happen under the registry lock so two
         players joining at the same instant can never be paired twice.
         """
-        rating = await self.persistence.load_rating(user.id)
+        standing = await self.persistence.load_standing(user.id)
         entry = QueueEntry(
             user_id=user.id,
-            rating=rating,
+            standing=standing,
             settings=settings,
             websocket=websocket,
             username=user.username,
@@ -288,7 +288,7 @@ class DuoEngine:
         self, user: User, websocket: WebSocket, settings: MatchSettings
     ) -> None:
         """Open a private WAITING room hosted by this user, for a friend to join by code."""
-        rating = await self.persistence.load_rating(user.id)
+        standing = await self.persistence.load_standing(user.id)
         async with self.registry.lock:
             if self.registry.is_busy(user.id):
                 await _send_error(
@@ -307,7 +307,7 @@ class DuoEngine:
                 user_id=user.id,
                 username=user.username,
                 avatar_url=resolve_avatar_url(user, app_settings),
-                rating=rating,
+                standing=standing,
                 websocket=websocket,
             )
             self.registry.register(match)
@@ -324,7 +324,7 @@ class DuoEngine:
 
     async def join_room(self, user: User, websocket: WebSocket, room_code: str) -> None:
         """Seat the second player in a friend room; the host still has to call start_match."""
-        rating = await self.persistence.load_rating(user.id)
+        standing = await self.persistence.load_standing(user.id)
         async with self.registry.lock:
             if self.registry.is_busy(user.id):
                 await _send_error(
@@ -343,7 +343,7 @@ class DuoEngine:
                 user_id=user.id,
                 username=user.username,
                 avatar_url=resolve_avatar_url(user, app_settings),
-                rating=rating,
+                standing=standing,
                 websocket=websocket,
             )
             self.registry.bind_player(match, user.id)
@@ -1118,7 +1118,7 @@ def _build_match(
             user_id=entry.user_id,
             username=entry.username,
             avatar_url=entry.avatar_url,
-            rating=entry.rating,
+            standing=entry.standing,
             websocket=entry.websocket,
         )
     return match

@@ -13,10 +13,14 @@ from app.models.duo.duo_match import DuoMatch, DuoMatchMode, DuoMatchStatus
 from app.models.duo.duo_match_round import DuoMatchRound
 from app.models.duo.duo_rating import DuoRating
 from app.models.game.duo_match_skill_use import DuoMatchSkillUse
+from app.models.game.user_game_profile import UserGameProfile
 from app.services.duo.duo_service import DuoService
 from app.services.duo.registry import DuoRegistry
 from app.services.duo.scoring import MatchOutcome
 from app.services.duo.state import LiveMatch, MatchSettings, PlayerConn
+from app.services.game.leveling import exp_for_level
+from app.services.game.player_card import PlayerStanding
+from app.services.game.season import RankTier
 
 ONE = "player-one"
 TWO = "player-two"
@@ -83,6 +87,18 @@ class FakeDuoRatingRepository:
         return higher + 1
 
 
+class FakeGameProfileRepository:
+    def __init__(self, profiles: dict[str, UserGameProfile] | None = None) -> None:
+        self.profiles = profiles or {}
+
+    async def profiles_by_user_ids(self, user_ids: list[str]) -> dict[str, UserGameProfile]:
+        return {
+            user_id: self.profiles[user_id]
+            for user_id in user_ids
+            if user_id in self.profiles
+        }
+
+
 class FakeChallengeRepository:
     def __init__(self, challenges: list[Challenge] | None = None) -> None:
         self.challenges = challenges or []
@@ -144,11 +160,13 @@ def _service(
     users: dict[str, User] | None = None,
     challenges: list[Challenge] | None = None,
     registry: DuoRegistry | None = None,
+    profiles: dict[str, UserGameProfile] | None = None,
 ) -> DuoService:
     return DuoService(
         matches=FakeDuoMatchRepository(matches or []),  # type: ignore[arg-type]
         ratings=FakeDuoRatingRepository(ratings, users),  # type: ignore[arg-type]
         challenges=FakeChallengeRepository(challenges),  # type: ignore[arg-type]
+        profiles=FakeGameProfileRepository(profiles),  # type: ignore[arg-type]
         registry=registry or DuoRegistry(),
     )
 
@@ -172,6 +190,47 @@ async def test_history_is_told_from_player_ones_side() -> None:
     assert summary.opponent is not None
     assert summary.opponent.id == TWO
     assert summary.opponent.rating == 1080
+
+
+async def test_a_history_opponent_is_a_full_player_card() -> None:
+    """The card an opponent shows in history is the same one they showed in
+    the lobby: level and class, not just a rating."""
+    service = _service(
+        matches=[_match()],
+        users={TWO: User(id=TWO, email="two@example.com", username="rival")},
+        ratings={TWO: _rating(TWO, rating=1520)},
+        profiles={
+            TWO: UserGameProfile(
+                user_id=TWO,
+                total_exp=exp_for_level(9),
+                level=9,
+                class_code="MAGE",
+                day_streak=5,
+            )
+        },
+    )
+
+    [summary] = await service.list_history(ONE, limit=10, offset=0)
+
+    assert summary.opponent is not None
+    assert summary.opponent.level == 9
+    assert summary.opponent.class_code == "MAGE"
+    assert summary.opponent.day_streak == 5
+    assert summary.opponent.tier is RankTier.PLATINUM
+
+
+async def test_an_opponent_without_a_game_profile_lands_at_level_one() -> None:
+    service = _service(
+        matches=[_match()],
+        users={TWO: User(id=TWO, email="two@example.com", username="rival")},
+        ratings={TWO: _rating(TWO, rating=1080)},
+    )
+
+    [summary] = await service.list_history(ONE, limit=10, offset=0)
+
+    assert summary.opponent is not None
+    assert summary.opponent.level == 1
+    assert summary.opponent.class_code is None
 
 
 async def test_the_same_match_is_mirrored_for_player_two() -> None:
@@ -325,7 +384,7 @@ async def test_room_preview_reads_the_live_registry() -> None:
         room_code="AB12CD",
     )
     live.players[ONE] = PlayerConn(
-        user_id=ONE, username="host", avatar_url=None, rating=1000
+        user_id=ONE, username="host", avatar_url=None, standing=PlayerStanding(rating=1000)
     )
     registry.register(live)
     service = _service(registry=registry)
@@ -348,7 +407,7 @@ async def test_a_room_that_already_started_is_not_previewable() -> None:
         status=DuoMatchStatus.IN_PROGRESS,
     )
     live.players[ONE] = PlayerConn(
-        user_id=ONE, username="host", avatar_url=None, rating=1000
+        user_id=ONE, username="host", avatar_url=None, standing=PlayerStanding(rating=1000)
     )
     registry.register(live)
     service = _service(registry=registry)

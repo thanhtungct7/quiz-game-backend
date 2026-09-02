@@ -15,7 +15,8 @@ from fastapi import WebSocket
 from app.models.content.challenge import ChallengeDifficulty
 from app.models.duo.duo_match import DuoMatchMode, DuoMatchStatus
 from app.schemas.content.course_content import ChallengePublicRead
-from app.schemas.duo.duo import DuoPlayerRead, DuoSettingsRead
+from app.schemas.duo.duo import DuoSettingsRead
+from app.schemas.game.player_card import PlayerCardRead
 from app.services.duo.combat import MAX_HP, Blow
 from app.services.duo.loadout import (
     ActiveEffect,
@@ -24,6 +25,7 @@ from app.services.duo.loadout import (
     SkillUseRecord,
     default_loadout,
 )
+from app.services.game.player_card import PlayerStanding, build_player_card
 
 
 @dataclass(frozen=True)
@@ -57,7 +59,11 @@ class PlayerConn:
     user_id: str
     username: str | None
     avatar_url: str | None
-    rating: int
+    # Rating, level, class and streak together: read once when the socket
+    # joins and shown as this player's card for the rest of the match. Not
+    # refreshed mid-match on purpose -- the card an opponent saw at the coin
+    # toss should not change under them while they play.
+    standing: PlayerStanding
     websocket: WebSocket | None = None
     connected: bool = True
     score: int = 0
@@ -94,12 +100,16 @@ class PlayerConn:
     def add_effect(self, effect: ActiveEffect) -> None:
         self.effects.add(effect)
 
-    def to_read(self) -> DuoPlayerRead:
-        return DuoPlayerRead(
-            id=self.user_id,
+    @property
+    def rating(self) -> int:
+        return self.standing.rating
+
+    def to_read(self) -> PlayerCardRead:
+        return build_player_card(
+            user_id=self.user_id,
             username=self.username,
             avatar_url=self.avatar_url,
-            rating=self.rating,
+            standing=self.standing,
         )
 
 
@@ -179,12 +189,18 @@ class LiveMatch:
 @dataclass
 class QueueEntry:
     user_id: str
-    rating: int
+    standing: PlayerStanding
     settings: MatchSettings
     websocket: WebSocket
     username: str | None = None
     avatar_url: str | None = None
     joined_at: float = field(default_factory=time.monotonic)
+
+    @property
+    def rating(self) -> int:
+        """Matchmaking bands are drawn on rating alone; the rest of the
+        standing only rides along so the card is ready when a match forms."""
+        return self.standing.rating
 
     def waited_seconds(self) -> int:
         return int(time.monotonic() - self.joined_at)

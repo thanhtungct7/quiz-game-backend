@@ -99,24 +99,48 @@ Development mail goes to the Mailpit service in `compose.yaml`; read it at
 ## Course content and the learn path
 
 `scripts/import_quiz_bank.py` loads `data/quiz/*.json` into a
-`Course → Unit → Lesson → Challenge → ChallengeOption` tree. Each source file
-becomes one *group*, laid out as a short stretch of walkable path — by default
-3 units × 20 lessons × 10 questions — with everything past that budget parked in
-a single `is_bank = true` lesson.
+`Course → Unit → Lesson → Challenge → ChallengeOption` tree, laid out as a path
+that climbs the TOEIC score scale. Three rules shape it:
 
+- a **lesson** holds exactly ten questions, all of the same kind and the same
+  source `toeic_band`;
+- a **unit** holds 20 lessons of a single band, cycling through every question
+  kind that band has, so two neighbouring lessons are never the same kind;
+- **units run band by band, lowest band first** — walking the path is walking up
+  the score scale.
+
+The ten raw `toeic_band` values are merged into five bands (`BANDS` in the
+script). Six of the ten carry only a single question kind, so without merging a
+unit could not be both single-band and multi-kind:
+
+| Unit range | Band | Question kinds |
+| --- | --- | --- |
+| 1-12 | TOEIC 250-450 | Điền từ · Ghép câu · Sửa lỗi Đ/S |
+| 13-24 | TOEIC 350-550 | Điền từ · Đọc hiểu |
+| 25-36 | TOEIC 450-700 | Điền từ · Ghép câu · Sửa lỗi Đ/S · Lỗi thường gặp |
+| 37-48 | TOEIC 550-800 | Ngữ pháp có giải thích · Điền từ |
+| 49-60 | TOEIC 650-990 | Đọc hiểu · Ghép câu · Sửa lỗi Đ/S · Tìm lỗi sai · Điền từ |
+
+Reading questions are packed **by whole article** (4+3+3, 5+5, …), so a reading
+lesson still lands on exactly ten without ever cutting an article in half. Which
+questions reach the path is a seeded shuffle, so two imports of the same data
+produce the same tree.
+
+Everything past that budget is parked in a per-band `is_bank = true` lesson.
 Bank lessons are hidden from `/courses/{id}/tree`, `/units/{id}/lessons` and
 `/progress/*`, but their challenges still feed duo matches and `POST
 /lessons/{id}/quiz`, which sample the whole `challenges` table. That split is
-what keeps a lesson finishable: the bank holds ~156k questions, a lesson holds
+what keeps a lesson finishable: the bank holds ~144k questions, a lesson holds
 ten.
 
 ```bash
 python -m scripts.import_quiz_bank --reset \
-  [--challenges-per-lesson 10] [--lessons-per-unit 20] [--units-per-group 3]
+  [--challenges-per-lesson 10] [--lessons-per-unit 20] \
+  [--max-units-per-band 12] [--seed 20260831]
 ```
 
 `GET /courses/{id}/tree` returns course, units and path lessons in one response
-(~100 KB for 48 units / 945 lessons) with an `ETag` computed from the payload.
+(~135 KB for 60 units / 1200 lessons) with an `ETag` computed from the payload.
 Clients should cache it and send `If-None-Match`; an unchanged course answers
 `304` with no body. It is the only content endpoint that opts out of the global
 `Cache-Control: no-store`.
@@ -284,6 +308,15 @@ Every frame in both directions is `{"type": "<name>", "data": {...}}`.
 `round.opponent_answered`, `round.result`, `match.resume`,
 `opponent.disconnected`, `opponent.reconnected`, `skill.used`,
 `match.finished`, `chat.message`, `pong`, `error`.
+
+Wherever a frame names a player — `connected`, `match.found`, `match.resume`,
+and the `opponent` on a history row or room preview — it carries the same
+**player card**: `id`, `username`, `avatar_url`, `rating`, `tier`, `level`,
+`class_code`, `day_streak` (`app/schemas/game/player_card.py`). Identity comes
+from `users`, standing from `user_game_profiles` and the ladder; `tier` and
+`level` are derived, never stored, so neither can disagree with the rating or
+the experience behind it. A player with no game profile yet still gets a card,
+at level 1 with no class.
 
 `round.start` never contains the answer — it is revealed in `round.result`.
 `round.start`, `round.result` and `match.resume` are built per player rather
