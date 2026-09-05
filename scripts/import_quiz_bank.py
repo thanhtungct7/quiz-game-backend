@@ -286,17 +286,29 @@ def transform_reading_comprehension(
 def transform_sentence_builder(
     rows: list[dict[str, Any]],
 ) -> Iterator[tuple[dict[str, Any], list[dict[str, Any]]]]:
+    """Word-ordering challenges: the options are the words of one sentence and
+    the answer is the order they go in.
+
+    They are emitted in `correct_words` order on purpose. The writer numbers
+    options by their position in this list, and for a ChallengeType.ORDER
+    challenge that `order_index` *is* the answer key -- the shuffling the
+    learner sees is done when the challenge is served, not stored. The raw
+    row's own `tiles` list is a pre-shuffled deal that would only fix one
+    layout forever, so it is ignored.
+    """
     for row in rows:
         words: list[str] = row["correct_words"]
         if len(words) < 2:
             continue
+        # Every word belongs in the sentence, so every option is correct;
+        # what distinguishes a right answer from a wrong one is the sequence.
         options = [{"text": word, "correct": True} for word in words]
-        question = f'Dịch câu sau sang tiếng Việt: "{row["english"]}"'
+        question = f'Sắp xếp các từ thành câu dịch đúng của: "{row["english"]}"'
         yield (
             {
-                "type": ChallengeType.ASSIST,
+                "type": ChallengeType.ORDER,
                 "question": question,
-                "explanation": None,
+                "explanation": f"Câu đúng: {row['vietnamese']}",
                 "difficulty": DIFFICULTY_MAP[row["difficulty"]],
                 "source_ref": f"sentence_builder:{row['id']}",
                 **_source_metadata(row),
@@ -679,10 +691,11 @@ class Batch:
 
     def add(self, challenge_row: dict[str, Any], option_dicts: list[dict[str, Any]]) -> None:
         challenge_id = challenge_row["id"]
-        # SELECT has exactly one correct option; ASSIST (sentence builder)
-        # marks every option correct, so joining them gives the assembled
-        # correct sentence -- either way this reproduces the source
-        # "correct_text" field without needing each transform to supply it.
+        # SELECT has exactly one correct option; ORDER (sentence builder)
+        # marks every option correct and holds them in answer order, so
+        # joining them gives the assembled correct sentence -- either way this
+        # reproduces the source "correct_text" field without needing each
+        # transform to supply it.
         correct_texts = [option["text"] for option in option_dicts if option["correct"]]
         challenge_row["correct_text"] = " ".join(correct_texts) if correct_texts else None
         self.challenges.append(challenge_row)

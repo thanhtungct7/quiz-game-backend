@@ -60,7 +60,12 @@ class FakeProgressService:
         self.course_progress = course_progress
 
     async def check_answer(
-        self, user_id: str, challenge_id: str, selected_option_id: str
+        self,
+        user_id: str,
+        challenge_id: str,
+        selected_option_id: str | None = None,
+        *,
+        selected_option_ids: list[str] | None = None,
     ) -> AnswerCheckResult:
         assert self.answer_result is not None
         return self.answer_result
@@ -98,6 +103,7 @@ async def test_check_answer_returns_service_result() -> None:
     expected = AnswerCheckResult(
         challenge_id="c0",
         selected_option_id="c0-a",
+        selected_option_ids=["c0-a"],
         correct=True,
         correct_option_ids=["c0-a"],
         explanation=None,

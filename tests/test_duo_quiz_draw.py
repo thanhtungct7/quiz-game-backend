@@ -1,3 +1,5 @@
+import pytest
+
 from app.models.content.challenge import Challenge, ChallengeDifficulty, ChallengeType
 from app.models.content.challenge_option import ChallengeOption
 from app.services.content.quiz_service import QuizService
@@ -129,3 +131,33 @@ async def test_generate_for_duo_is_reproducible_for_a_given_seed() -> None:
     assert [o.id for o in first.questions[0].options] == [
         o.id for o in second.questions[0].options
     ]
+
+
+def _make_order_challenge(challenge_id: str) -> Challenge:
+    """A "ghép câu" challenge as the importer writes one: every tile correct,
+    the answer carried by the option order_index run."""
+    return Challenge(
+        id=challenge_id,
+        lesson_id="lesson-1",
+        type=ChallengeType.ORDER,
+        question=f"Question {challenge_id}",
+        difficulty=ChallengeDifficulty.EASY,
+        order_index=1,
+        options=[
+            ChallengeOption(id=f"{challenge_id}-1", text="Tôi", correct=True, order_index=1),
+            ChallengeOption(id=f"{challenge_id}-2", text="đi", correct=True, order_index=2),
+            ChallengeOption(id=f"{challenge_id}-3", text="ngủ", correct=True, order_index=3),
+        ],
+    )
+
+
+@pytest.mark.asyncio
+async def test_duo_draw_skips_order_challenges() -> None:
+    """A duo round is one timed tap. An ORDER challenge cannot be answered
+    that way, and since all of its tiles are flagged correct it would come out
+    as a round where every tap scores."""
+    service, _ = _service([_make_order_challenge("ordered"), _make_challenge("c1")])
+
+    drawn = await service.generate_for_duo(count=5)
+
+    assert [question.id for question in drawn.questions] == ["c1"]

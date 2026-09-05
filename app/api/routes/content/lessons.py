@@ -7,6 +7,7 @@ from app.api.routes.content._content_errors import raise_content_http_error
 from app.core.exceptions import ApplicationError
 from app.schemas.content.course_content import ChallengePublicRead
 from app.schemas.content.quiz import QuizGenerateRequest, QuizSet
+from app.services.content.challenge_presenter import to_public_challenge
 
 router = APIRouter()
 
@@ -24,7 +25,7 @@ async def list_challenges(
     them whole, but bank lessons hold tens of thousands of challenges and must
     never be serialised in one response."""
     challenges = await service.list_challenges(lesson_id, limit=limit, offset=offset)
-    return [ChallengePublicRead.model_validate(challenge) for challenge in challenges]
+    return [to_public_challenge(challenge) for challenge in challenges]
 
 
 @router.post("/{lesson_id}/quiz", response_model=QuizSet)

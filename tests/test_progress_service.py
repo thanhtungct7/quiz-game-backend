@@ -4,6 +4,7 @@ from app.core.exceptions import (
     ChallengeNotFoundError,
     ChallengeOptionNotFoundError,
     CourseNotFoundError,
+    InvalidAnswerSubmissionError,
     LessonNotFoundError,
     UnitNotFoundError,
 )
@@ -172,6 +173,28 @@ def _make_challenge(challenge_id: str, lesson_id: str) -> Challenge:
     )
 
 
+def _make_order_challenge(challenge_id: str, lesson_id: str, words: list[str]) -> Challenge:
+    """A word-ordering challenge whose answer is the option order_index run.
+
+    Options are built in solution order and every one is flagged correct --
+    that is exactly what the importer writes for a "ghép câu" question.
+    """
+    return Challenge(
+        id=challenge_id,
+        lesson_id=lesson_id,
+        type=ChallengeType.ORDER,
+        question=f"Question {challenge_id}",
+        difficulty=ChallengeDifficulty.EASY,
+        order_index=1,
+        options=[
+            ChallengeOption(
+                id=f"{challenge_id}-{position}", text=word, correct=True, order_index=position
+            )
+            for position, word in enumerate(words, start=1)
+        ],
+    )
+
+
 def build_service(
     challenges: list[Challenge],
     lessons: list[Lesson] | None = None,
@@ -282,6 +305,55 @@ async def test_check_answer_marks_lesson_in_progress_then_completed() -> None:
 
 
 @pytest.mark.asyncio
+async def test_marking_a_lesson_completed_does_not_need_every_challenge_mastered() -> None:
+    """What the battle gate needs.
+
+    A fight ends when the monster falls, not when the pool has been mastered,
+    so completion has to be something the caller can state outright -- while the
+    mastered count keeps telling the truth about how much was actually learned.
+    """
+    lesson = Lesson(id="lesson-1", unit_id="unit-1", title="Lesson 1", order_index=1)
+    challenge_a = _make_challenge("c0", lesson.id)
+    challenge_b = _make_challenge("c1", lesson.id)
+    service, progress_repo = build_service([challenge_a, challenge_b], [lesson])
+
+    await service.check_answer("user-1", "c0", "c0-a")
+    await service.mark_lesson_completed("user-1", lesson.id)
+
+    stored = await progress_repo.get_lesson_progress("user-1", lesson.id)
+    assert stored is not None
+    assert stored.status == LessonProgressStatus.COMPLETED
+    assert stored.completed_at is not None
+    assert stored.correct_challenge_count == 1
+    assert stored.total_challenge_count == 2
+
+
+@pytest.mark.asyncio
+async def test_a_completed_lesson_is_never_walked_back_by_a_later_answer() -> None:
+    """Completion is a ratchet.
+
+    Replaying a cleared gate answers questions again, and recomputing the status
+    from mastery alone would drop a 1-of-2 lesson back to IN_PROGRESS -- which on
+    the path means the next lesson silently re-locks.
+    """
+    lesson = Lesson(id="lesson-1", unit_id="unit-1", title="Lesson 1", order_index=1)
+    challenge_a = _make_challenge("c0", lesson.id)
+    challenge_b = _make_challenge("c1", lesson.id)
+    service, progress_repo = build_service([challenge_a, challenge_b], [lesson])
+
+    await service.mark_lesson_completed("user-1", lesson.id)
+    completed_at = (await progress_repo.get_lesson_progress("user-1", lesson.id)).completed_at
+
+    await service.check_answer("user-1", "c0", "c0-b")
+
+    stored = await progress_repo.get_lesson_progress("user-1", lesson.id)
+    assert stored is not None
+    assert stored.status == LessonProgressStatus.COMPLETED
+    # Set once and never moved, so a replay cannot pay the completion twice.
+    assert stored.completed_at == completed_at
+
+
+@pytest.mark.asyncio
 async def test_get_lesson_progress_defaults_to_not_started() -> None:
     lesson = Lesson(id="lesson-1", unit_id="unit-1", title="Lesson 1", order_index=1)
     challenge = _make_challenge("c0", lesson.id)
@@ -380,3 +452,106 @@ async def test_get_course_progress_requires_existing_course() -> None:
 
     with pytest.raises(CourseNotFoundError):
         await service.get_course_progress("user-1", "missing")
+
+
+@pytest.mark.asyncio
+async def test_check_answer_accepts_the_right_word_order() -> None:
+    challenge = _make_order_challenge("c0", "lesson-1", ["Tôi", "phải", "đi", "ngủ"])
+    service, _ = build_service([challenge])
+
+    result = await service.check_answer(
+        "user-1", "c0", selected_option_ids=["c0-1", "c0-2", "c0-3", "c0-4"]
+    )
+
+    assert result.correct is True
+    assert result.correct_option_ids == ["c0-1", "c0-2", "c0-3", "c0-4"]
+
+
+@pytest.mark.asyncio
+async def test_check_answer_rejects_the_wrong_word_order() -> None:
+    """The bug this type used to have: every tile is flagged correct, so
+    grading on the flags made any arrangement -- and any single tap -- pass."""
+    challenge = _make_order_challenge("c0", "lesson-1", ["Tôi", "phải", "đi", "ngủ"])
+    service, _ = build_service([challenge])
+
+    result = await service.check_answer(
+        "user-1", "c0", selected_option_ids=["c0-2", "c0-1", "c0-4", "c0-3"]
+    )
+
+    assert result.correct is False
+    assert result.correct_option_ids == ["c0-1", "c0-2", "c0-3", "c0-4"]
+
+
+@pytest.mark.asyncio
+async def test_check_answer_rejects_a_partial_word_order() -> None:
+    challenge = _make_order_challenge("c0", "lesson-1", ["Tôi", "phải", "đi", "ngủ"])
+    service, _ = build_service([challenge])
+
+    result = await service.check_answer("user-1", "c0", selected_option_ids=["c0-1", "c0-2"])
+
+    assert result.correct is False
+
+
+@pytest.mark.asyncio
+async def test_check_answer_treats_repeated_words_as_interchangeable() -> None:
+    """Two tiles carrying the same word spell the same sentence either way
+    round, so grading compares words rather than option ids."""
+    challenge = _make_order_challenge("c0", "lesson-1", ["càng", "học", "càng", "giỏi"])
+    service, _ = build_service([challenge])
+
+    result = await service.check_answer(
+        "user-1", "c0", selected_option_ids=["c0-3", "c0-2", "c0-1", "c0-4"]
+    )
+
+    assert result.correct is True
+
+
+@pytest.mark.asyncio
+async def test_check_answer_rejects_a_reused_tile() -> None:
+    challenge = _make_order_challenge("c0", "lesson-1", ["Tôi", "phải", "đi", "ngủ"])
+    service, _ = build_service([challenge])
+
+    with pytest.raises(InvalidAnswerSubmissionError):
+        await service.check_answer(
+            "user-1", "c0", selected_option_ids=["c0-1", "c0-1", "c0-1", "c0-1"]
+        )
+
+
+@pytest.mark.asyncio
+async def test_check_answer_rejects_a_single_tap_on_an_order_challenge() -> None:
+    challenge = _make_order_challenge("c0", "lesson-1", ["Tôi", "phải", "đi", "ngủ"])
+    service, _ = build_service([challenge])
+
+    with pytest.raises(InvalidAnswerSubmissionError):
+        await service.check_answer("user-1", "c0", "c0-1")
+
+
+@pytest.mark.asyncio
+async def test_check_answer_rejects_a_sequence_on_a_single_choice_challenge() -> None:
+    challenge = _make_challenge("c0", "lesson-1")
+    service, _ = build_service([challenge])
+
+    with pytest.raises(InvalidAnswerSubmissionError):
+        await service.check_answer("user-1", "c0", selected_option_ids=["c0-a"])
+
+
+@pytest.mark.asyncio
+async def test_check_answer_records_mastery_for_an_order_challenge() -> None:
+    """An ORDER answer has no single selected option, but it still counts as
+    an attempt and still masters the challenge."""
+    challenge = _make_order_challenge("c0", "lesson-1", ["Tôi", "phải", "đi", "ngủ"])
+    service, progress_repo = build_service([challenge])
+
+    await service.check_answer("user-1", "c0", selected_option_ids=["c0-2", "c0-1"])
+    record = await progress_repo.get_challenge_progress("user-1", "c0")
+    assert record is not None
+    assert record.mastered is False
+    assert record.last_selected_option_id is None
+
+    await service.check_answer(
+        "user-1", "c0", selected_option_ids=["c0-1", "c0-2", "c0-3", "c0-4"]
+    )
+    record = await progress_repo.get_challenge_progress("user-1", "c0")
+    assert record is not None
+    assert record.mastered is True
+    assert record.attempts_count == 2

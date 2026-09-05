@@ -38,12 +38,30 @@ class QuizSetWithAnswers(BaseModel):
 
 
 class AnswerCheckRequest(BaseModel):
-    selected_option_id: str
+    """One submitted answer, in whichever of the two shapes the challenge takes.
+
+    Single-choice challenges (SELECT/ASSIST) send `selected_option_id`. An
+    ORDER challenge sends `selected_option_ids` -- every word tile, in the
+    order the learner laid them down. Exactly one of the two must be present;
+    `ProgressService.check_answer` rejects a shape the challenge type does not
+    take rather than guessing.
+    """
+
+    selected_option_id: str | None = None
+    selected_option_ids: list[str] | None = None
 
 
 class AnswerCheckResult(BaseModel):
+    """The graded answer.
+
+    `correct_option_ids` is a set for single-choice challenges but a *sequence*
+    for ORDER ones -- the tiles in the order that spells the right sentence, so
+    a wrong answer can be shown its solution.
+    """
+
     challenge_id: str
-    selected_option_id: str
+    selected_option_id: str | None
+    selected_option_ids: list[str]
     correct: bool
     correct_option_ids: list[str]
     explanation: str | None

@@ -15,8 +15,19 @@ if TYPE_CHECKING:
 
 
 class ChallengeType(StrEnum):
+    """How an answer is given, which is also how it is graded.
+
+    SELECT and ASSIST are single-choice: one option is picked and one option
+    is correct. ORDER ("ghep cau") is not -- every option is one word tile of
+    a single sentence, all of them belong in the answer, and what is being
+    graded is the *sequence* they are laid down in. Its answer key lives in
+    `ChallengeOption.order_index`, never in the `correct` flag, so an ORDER
+    challenge must never be served with its options in stored order.
+    """
+
     SELECT = "SELECT"
     ASSIST = "ASSIST"
+    ORDER = "ORDER"
 
 
 class ChallengeDifficulty(StrEnum):

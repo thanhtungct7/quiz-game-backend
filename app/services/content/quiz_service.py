@@ -1,16 +1,13 @@
 import random
 
 from app.core.exceptions import LessonNotFoundError, UnitNotFoundError
-from app.models.content.challenge import Challenge, ChallengeDifficulty
+from app.models.content.challenge import ChallengeDifficulty, ChallengeType
 from app.repository.content.challenge_repository import ChallengeRepository
 from app.repository.content.lesson_repository import LessonRepository
 from app.repository.content.unit_repository import UnitRepository
-from app.schemas.content.course_content import (
-    ChallengeOptionPublicRead,
-    ChallengePublicRead,
-    PassageRead,
-)
+from app.schemas.content.course_content import ChallengePublicRead
 from app.schemas.content.quiz import QuizSet, QuizSetWithAnswers, StageQuizSet
+from app.services.content.challenge_presenter import to_public_challenge
 
 
 class QuizService:
@@ -93,7 +90,10 @@ class QuizService:
 
         Returns the public questions alongside the answer key so the match
         runtime can grade in memory. Challenges with no correct option are
-        dropped rather than served as unanswerable rounds.
+        dropped rather than served as unanswerable rounds, and so are ORDER
+        ones: a duo round is a single timed tap, which cannot express a word
+        order, and every tile of an ORDER challenge is flagged correct -- left
+        in, they would be rounds where any tap scores.
         """
         rng = random.Random(seed)  # noqa: S311 -- shuffling quiz questions, not security-sensitive
         # Over-fetch so dropping malformed challenges still leaves enough rounds.
@@ -105,10 +105,60 @@ class QuizService:
         for challenge in pool:
             if len(questions) == count:
                 break
+            if challenge.type is ChallengeType.ORDER:
+                continue
             correct_ids = [option.id for option in challenge.options if option.correct]
             if not correct_ids:
                 continue
-            questions.append(self._to_public_read(challenge, rng))
+            questions.append(to_public_challenge(challenge, rng))
+            answer_key[challenge.id] = correct_ids
+            explanations[challenge.id] = challenge.explanation
+
+        return QuizSetWithAnswers(
+            questions=questions, answer_key=answer_key, explanations=explanations
+        )
+
+    async def generate_for_battle(
+        self,
+        lesson_id: str,
+        count: int = 20,
+        seed: int | None = None,
+    ) -> QuizSetWithAnswers:
+        """Draw one lesson's questions for a PvE battle, key included.
+
+        The key is never used to grade: a battle answer goes through
+        `ProgressService.check_answer` so it counts as study exactly like the
+        ordinary lesson screen. It is here for the two things the engine has to
+        do without a graded answer -- revealing the solution when the clock
+        runs out, and telling a REMOVE_OPTIONS skill which options are wrong.
+
+        Challenges with no correct option are dropped rather than served as
+        unanswerable rounds, and ORDER ones with them -- a battle round is a
+        single tap, which cannot express a word order.
+        """
+        lesson = await self.lessons.get_by_id(lesson_id)
+        if lesson is None:
+            raise LessonNotFoundError(lesson_id)
+
+        rng = random.Random(seed)  # noqa: S311 -- shuffling quiz questions, not security-sensitive
+        # Over-fetch so dropping malformed challenges still leaves a full fight.
+        pool = await self.challenges.list_by_lesson_filtered(
+            lesson_id, None, None, limit=count * 2
+        )
+        rng.shuffle(pool)
+
+        questions: list[ChallengePublicRead] = []
+        answer_key: dict[str, list[str]] = {}
+        explanations: dict[str, str | None] = {}
+        for challenge in pool:
+            if len(questions) == count:
+                break
+            if challenge.type is ChallengeType.ORDER:
+                continue
+            correct_ids = [option.id for option in challenge.options if option.correct]
+            if not correct_ids:
+                continue
+            questions.append(to_public_challenge(challenge, rng))
             answer_key[challenge.id] = correct_ids
             explanations[challenge.id] = challenge.explanation
 
@@ -139,22 +189,4 @@ class QuizService:
 
         selected = rng.sample(pool, min(count, len(pool)))
         rng.shuffle(selected)
-        return [self._to_public_read(challenge, rng) for challenge in selected]
-
-    @staticmethod
-    def _to_public_read(challenge: Challenge, rng: random.Random) -> ChallengePublicRead:
-        """Client-facing view of a challenge with options shuffled and,
-        crucially, no `correct` flags — the answer key stays server-side."""
-        options = list(challenge.options)
-        rng.shuffle(options)
-        return ChallengePublicRead(
-            id=challenge.id,
-            lesson_id=challenge.lesson_id,
-            type=challenge.type,
-            question=challenge.question,
-            difficulty=challenge.difficulty,
-            topic_id=challenge.topic_id,
-            order_index=challenge.order_index,
-            passage=PassageRead.model_validate(challenge.passage) if challenge.passage else None,
-            options=[ChallengeOptionPublicRead.model_validate(option) for option in options],
-        )
+        return [to_public_challenge(challenge, rng) for challenge in selected]

@@ -8,6 +8,7 @@ from app.core.exceptions import (
     CourseNotFoundError,
     DuplicateOrderIndexError,
     DuplicateTopicNameError,
+    InvalidAnswerSubmissionError,
     InvalidChallengeOptionsError,
     LessonNotFoundError,
     TopicNotFoundError,
@@ -23,6 +24,7 @@ _NOT_FOUND_ERRORS = (
     TopicNotFoundError,
 )
 _BAD_REQUEST_ERRORS = (
+    InvalidAnswerSubmissionError,
     InvalidChallengeOptionsError,
     DuplicateOrderIndexError,
     DuplicateTopicNameError,

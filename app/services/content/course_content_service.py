@@ -46,13 +46,21 @@ _UNASSIGNED_TOPIC_NAME = "Chưa phân loại"
 
 def _validate_correct_flags(challenge_type: ChallengeType, correct_flags: list[bool]) -> None:
     """Enforce the per-type answer shape: every challenge needs at least one
-    correct option, and SELECT (single-choice) needs exactly one."""
+    correct option, SELECT (single-choice) needs exactly one, and ORDER needs
+    them all -- every option of a word-ordering challenge is one word of the
+    one right sentence, so an option that is not correct is an option that
+    does not belong in the challenge."""
     correct_count = sum(1 for flag in correct_flags if flag)
     if correct_count == 0:
         raise InvalidChallengeOptionsError("At least one option must be correct")
     if challenge_type == ChallengeType.SELECT and correct_count != 1:
         raise InvalidChallengeOptionsError(
             "SELECT challenges require exactly one correct option"
+        )
+    if challenge_type == ChallengeType.ORDER and correct_count != len(correct_flags):
+        raise InvalidChallengeOptionsError(
+            "ORDER challenges require every option to be correct; their answer is "
+            "the option order_index sequence, not the correct flag"
         )
 
 
