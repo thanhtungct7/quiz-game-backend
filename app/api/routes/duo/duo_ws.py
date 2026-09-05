@@ -20,6 +20,7 @@ from app.schemas.duo.events import (
     ClientEvent,
     ErrorCode,
     ErrorData,
+    PingPayload,
     QueueJoinPayload,
     RoomCreatePayload,
     RoomJoinPayload,
@@ -100,18 +101,14 @@ async def _dispatch(user: User, websocket: WebSocket, raw: str) -> None:
             if answer is None:
                 await _invalid(websocket)
                 return
-            await engine.submit_answer(
-                user.id, websocket, answer.round_index, answer.option_id
-            )
+            await engine.submit_answer(user.id, websocket, answer.token, answer.option_id)
 
         case ClientEvent.SKILL_USE:
             skill = _parse(SkillUsePayload, message.data)
             if skill is None:
                 await _invalid(websocket)
                 return
-            await engine.use_skill(
-                user.id, websocket, skill.round_index, skill.skill_code
-            )
+            await engine.use_skill(user.id, websocket, skill.skill_code)
 
         case ClientEvent.MATCH_LEAVE:
             await engine.leave_match(user.id)
@@ -124,7 +121,10 @@ async def _dispatch(user: User, websocket: WebSocket, raw: str) -> None:
             await engine.send_chat(user.id, websocket, chat.message.strip())
 
         case ClientEvent.PING:
-            await websocket.send_json(envelope(ServerEvent.PONG, None))
+            ping = _parse(PingPayload, message.data)
+            # A ping with no stamp is still a ping; it just cannot be used to
+            # measure anything.
+            await engine.pong(websocket, ping.client_time_ms if ping else 0)
 
 
 def _to_settings(payload: DuoSettingsRequest) -> MatchSettings:

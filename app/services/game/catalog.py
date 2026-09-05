@@ -15,6 +15,14 @@ from app.models.game.game_item import EquipmentSlot, ItemKind, ItemRarity
 from app.models.game.skill import SkillEffect, SkillUnlockKind
 from app.repository.game.catalog_repository import CatalogRepository
 from app.repository.game.item_repository import ItemRepository
+from app.repository.game.monster_repository import MonsterRepository
+
+# A monster that is kept waiting starts hitting harder, so a long lesson
+# cannot be farmed as a safe place to sit. Nine authored rounds is 54 seconds
+# of fight -- the last third of an ordinary gate and the second half of a boss,
+# so rage is what closes a fight rather than what decides it.
+ENRAGE_AFTER_ROUNDS = 9
+ENRAGE_MULTIPLIER_PERMILLE = 1400
 
 WARRIOR = "WARRIOR"
 MAGE = "MAGE"
@@ -474,3 +482,209 @@ async def seed_item_catalog(items: ItemRepository) -> None:
     """Upsert the drop table. Safe to run on every start."""
     for spec in ITEMS:
         await items.upsert_item(spec.code, _item_row(spec))
+
+
+# --- monsters ---------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class MonsterSpec:
+    code: str
+    name: str
+    description: str
+    tier: int
+    max_hp: int
+    attack_damage: int
+    art_code: str
+    is_boss: bool = False
+    damage_reduction_permille: int = 0
+    enrage_after_rounds: int = ENRAGE_AFTER_ROUNDS
+    enrage_multiplier_permille: int = ENRAGE_MULTIPLIER_PERMILLE
+    sort_order: int = 0
+
+
+# Six tiers, each with the monster that stands on ordinary lessons and the boss
+# that closes the unit.
+#
+# Health sets one thing and one thing only: how many correct answers a gate
+# takes. A lesson holds ten questions, and an ordinary gate is meant to be the
+# whole lesson -- so every ordinary monster carries the same health, sized to
+# the tenth correct answer at a normal pace, and every boss to the fifteenth.
+# Answering fast still gets there sooner (about eight and eleven), because
+# speed and combos multiply the same numbers. That is why the health column
+# barely moves across tiers: the tier is expressed in what the monster does
+# back, not in how long it takes to fall.
+#
+# Attack is sized against the fight it now has time to happen in. An ordinary
+# gate runs about a minute and costs a player at a normal pace a quarter to a
+# half of a 100-health bar; a boss runs about a minute and a half and costs
+# most of it. A player who gets one answer in four wrong wins the early gates
+# and loses the late ones, which is what a gate is for.
+#
+# The two health numbers that break the pattern are the armoured ones: a
+# monster that soaks a tenth or a seventh of every blow needs proportionally
+# less health to still fall on the same answer.
+#
+# `weak_topic_id` is left NULL everywhere on purpose. The wiring is in place
+# (`element_multiplier` feeds `resolve_blow`), but no balance leans on it yet.
+MONSTERS = (
+    MonsterSpec(
+        code="SLIME",
+        name="Slime",
+        description="Chậm và yếu. Con quái đầu tiên ai cũng hạ được.",
+        tier=1,
+        max_hp=235,
+        attack_damage=8,
+        art_code="SLIME",
+        sort_order=1,
+    ),
+    MonsterSpec(
+        code="SLIME_KING",
+        name="Slime Vương",
+        description="To gấp đôi và biết giận. Giữ cửa cuối của unit.",
+        tier=1,
+        max_hp=375,
+        attack_damage=11,
+        art_code="SLIME_KING",
+        is_boss=True,
+        sort_order=2,
+    ),
+    MonsterSpec(
+        code="GOBLIN",
+        name="Yêu tinh",
+        description="Nhanh nhẹn, đánh đau hơn Slime.",
+        tier=2,
+        max_hp=235,
+        attack_damage=9,
+        art_code="GOBLIN",
+        sort_order=3,
+    ),
+    MonsterSpec(
+        code="GOBLIN_CHIEF",
+        name="Tù trưởng Yêu tinh",
+        description="Cầm đầu cả bầy. Càng để lâu càng hung.",
+        tier=2,
+        max_hp=375,
+        attack_damage=12,
+        art_code="GOBLIN_CHIEF",
+        is_boss=True,
+        sort_order=4,
+    ),
+    MonsterSpec(
+        code="DIRE_WOLF",
+        name="Sói hoang",
+        description="Không cho bạn nghỉ giữa hai câu hỏi.",
+        tier=3,
+        max_hp=235,
+        attack_damage=10,
+        art_code="DIRE_WOLF",
+        enrage_after_rounds=7,
+        sort_order=5,
+    ),
+    MonsterSpec(
+        code="ALPHA_WOLF",
+        name="Sói đầu đàn",
+        description="Nổi điên sớm hơn cả bầy của nó.",
+        tier=3,
+        max_hp=375,
+        attack_damage=13,
+        art_code="ALPHA_WOLF",
+        is_boss=True,
+        enrage_after_rounds=7,
+        sort_order=6,
+    ),
+    MonsterSpec(
+        code="GOLEM",
+        name="Golem đá",
+        description="Da đá: mọi đòn đánh vào nó đều nhẹ đi một phần.",
+        tier=4,
+        max_hp=225,
+        attack_damage=11,
+        art_code="GOLEM",
+        damage_reduction_permille=100,
+        sort_order=7,
+    ),
+    MonsterSpec(
+        code="STONE_TITAN",
+        name="Thần đá",
+        description="Cả một vách núi biết đi. Đòn chậm nhưng rất nặng.",
+        tier=4,
+        max_hp=345,
+        attack_damage=14,
+        art_code="STONE_TITAN",
+        is_boss=True,
+        damage_reduction_permille=150,
+        sort_order=8,
+    ),
+    MonsterSpec(
+        code="WRAITH",
+        name="Oán linh",
+        description="Đánh thẳng vào tinh thần. Sai một câu là trả giá.",
+        tier=5,
+        max_hp=235,
+        attack_damage=12,
+        art_code="WRAITH",
+        sort_order=9,
+    ),
+    MonsterSpec(
+        code="LICH",
+        name="Vua Lich",
+        description="Chờ bạn mệt rồi mới ra đòn thật.",
+        tier=5,
+        max_hp=360,
+        attack_damage=15,
+        art_code="LICH",
+        is_boss=True,
+        damage_reduction_permille=100,
+        sort_order=10,
+    ),
+    MonsterSpec(
+        code="DRAKE",
+        name="Rồng con",
+        description="Chưa phải rồng, nhưng đã đủ để thiêu bạn.",
+        tier=6,
+        max_hp=235,
+        attack_damage=13,
+        art_code="DRAKE",
+        sort_order=11,
+    ),
+    MonsterSpec(
+        code="DRAGON",
+        name="Rồng lửa",
+        description="Cửa cuối của con đường. Sai bốn câu là hết máu.",
+        tier=6,
+        max_hp=345,
+        attack_damage=16,
+        art_code="DRAGON",
+        is_boss=True,
+        damage_reduction_permille=150,
+        sort_order=12,
+    ),
+)
+
+
+def _monster_row(spec: MonsterSpec) -> dict[str, object]:
+    return {
+        "name": spec.name,
+        "description": spec.description,
+        "tier": spec.tier,
+        "max_hp": spec.max_hp,
+        "attack_damage": spec.attack_damage,
+        "damage_reduction_permille": spec.damage_reduction_permille,
+        "enrage_after_rounds": spec.enrage_after_rounds,
+        "enrage_multiplier_permille": spec.enrage_multiplier_permille,
+        "is_boss": spec.is_boss,
+        "art_code": spec.art_code,
+        "sort_order": spec.sort_order,
+        "is_active": True,
+    }
+
+
+async def seed_monster_catalog(monsters: MonsterRepository) -> None:
+    """Upsert the monster catalog. Safe to run on every start.
+
+    Never deletes: a battle in history names its monster by code, and retiring
+    one is done with `is_active = false`.
+    """
+    for spec in MONSTERS:
+        await monsters.upsert_monster(spec.code, _monster_row(spec))

@@ -53,6 +53,27 @@ def test_identical_totals_are_a_draw() -> None:
     assert decide_outcome(totals, totals) is MatchOutcome.DRAW
 
 
+def test_clearing_the_deck_beats_everything() -> None:
+    """Answering every question right is the race the match is about; being
+    healthier only means you lost the race in better shape."""
+    one = PlayerTotals(
+        score=0, correct_count=3, total_elapsed_ms=99_000, hp_left=1, deck_cleared=True
+    )
+    two = PlayerTotals(
+        score=9000, correct_count=9, total_elapsed_ms=1_000, hp_left=100
+    )
+
+    assert decide_outcome(one, two) is MatchOutcome.WIN
+    assert decide_outcome(two, one) is MatchOutcome.LOSE
+
+
+def test_neither_clearing_the_deck_decides_on_health_as_before() -> None:
+    one = PlayerTotals(score=0, correct_count=0, total_elapsed_ms=0, hp_left=40)
+    two = PlayerTotals(score=9000, correct_count=9, total_elapsed_ms=0, hp_left=10)
+
+    assert decide_outcome(one, two) is MatchOutcome.WIN
+
+
 def test_health_beats_score() -> None:
     # Losing the fight while winning on points is still losing.
     one = PlayerTotals(score=3000, correct_count=3, total_elapsed_ms=1_000, hp_left=0)

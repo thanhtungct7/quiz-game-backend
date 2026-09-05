@@ -1,9 +1,7 @@
 from sqlalchemy import func, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.orm import selectinload
 
 from app.models.duo.duo_match import DuoMatch, DuoMatchEndReason, DuoMatchStatus
-from app.models.duo.duo_match_round import DuoMatchRound
 from app.models.game.duo_match_skill_use import DuoMatchSkillUse
 
 
@@ -19,15 +17,6 @@ class DuoMatchRepository:
 
     async def get_by_id(self, match_id: str) -> DuoMatch | None:
         statement = select(DuoMatch).where(DuoMatch.id == match_id)
-        result = await self.db.execute(statement)
-        return result.scalar_one_or_none()
-
-    async def get_with_rounds(self, match_id: str) -> DuoMatch | None:
-        statement = (
-            select(DuoMatch)
-            .where(DuoMatch.id == match_id)
-            .options(selectinload(DuoMatch.rounds))
-        )
         result = await self.db.execute(statement)
         return result.scalar_one_or_none()
 
@@ -73,12 +62,6 @@ class DuoMatchRepository:
         claimed = result.scalar_one_or_none() is not None
         await self.db.commit()
         return claimed
-
-    async def add_rounds(self, rounds: list[DuoMatchRound]) -> None:
-        if not rounds:
-            return
-        self.db.add_all(rounds)
-        await self.db.commit()
 
     async def abandon_orphaned(self) -> list[str]:
         """Close matches left IN_PROGRESS by a previous process.

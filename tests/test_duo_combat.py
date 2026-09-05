@@ -1,5 +1,5 @@
 from app.models.duo.duo_match import STARTING_HP
-from app.services.duo.combat import (
+from app.services.game.combat import (
     COMBO_TIER_1,
     COMBO_TIER_2,
     MAX_DAMAGE,
@@ -222,7 +222,7 @@ def test_the_database_starting_health_matches_the_combat_rule() -> None:
 
 
 def test_a_streak_buys_a_small_head_start() -> None:
-    from app.services.duo.combat import STREAK_HP_CAP, STREAK_MANA_CAP, streak_buff
+    from app.services.game.combat import STREAK_HP_CAP, STREAK_MANA_CAP, streak_buff
 
     assert streak_buff(0) == streak_buff(0)
     assert streak_buff(0).bonus_max_hp == 0
@@ -236,6 +236,6 @@ def test_a_streak_buys_a_small_head_start() -> None:
 
 
 def test_a_negative_streak_is_treated_as_none() -> None:
-    from app.services.duo.combat import streak_buff
+    from app.services.game.combat import streak_buff
 
     assert streak_buff(-5).bonus_max_hp == 0

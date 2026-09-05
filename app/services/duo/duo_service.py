@@ -13,10 +13,8 @@ from app.core.exceptions import (
 )
 from app.models.auth.user import User
 from app.models.duo.duo_match import DuoMatch, DuoMatchStatus
-from app.models.duo.duo_match_round import DuoMatchRound
 from app.models.duo.duo_rating import DEFAULT_RATING
 from app.models.game.user_game_profile import UserGameProfile
-from app.repository.content.challenge_repository import ChallengeRepository
 from app.repository.duo.duo_match_repository import DuoMatchRepository
 from app.repository.duo.duo_rating_repository import DuoRatingRepository
 from app.repository.game.game_profile_repository import GameProfileRepository
@@ -27,7 +25,6 @@ from app.schemas.duo.duo import (
     DuoMatchDetail,
     DuoMatchSummary,
     DuoRoomPreview,
-    DuoRoundRead,
     DuoSkillUseRead,
     DuoStatsRead,
     LeaderboardScope,
@@ -45,14 +42,12 @@ class DuoService:
         self,
         matches: DuoMatchRepository,
         ratings: DuoRatingRepository,
-        challenges: ChallengeRepository,
         profiles: GameProfileRepository,
         registry: DuoRegistry | None = None,
         seasons: SeasonRepository | None = None,
     ) -> None:
         self.matches = matches
         self.ratings = ratings
-        self.challenges = challenges
         # Required, not optional: without it every opponent on the history
         # page would silently read as a level-1 player with no class.
         self.profiles = profiles
@@ -80,13 +75,18 @@ class DuoService:
         ]
 
     async def get_match(self, user_id: str, match_id: str) -> DuoMatchDetail:
-        """Full round-by-round breakdown of one match.
+        """One finished match in full: the summary, the health both sides were
+        left on, and every skill either of them fired.
+
+        There is no answer-by-answer replay any more, and there cannot be: the
+        two players work through their own decks at their own pace, so there is
+        no shared round for a replay to be a list of.
 
         Only a player who took part may view it — anyone else gets
         NotMatchMemberError, not just a 404, so the two failure cases stay
         distinguishable.
         """
-        record = await self.matches.get_with_rounds(match_id)
+        record = await self.matches.get_by_id(match_id)
         if record is None:
             raise DuoMatchNotFoundError(match_id)
         if user_id not in (record.player_one_id, record.player_two_id):
@@ -97,21 +97,10 @@ class DuoService:
         ratings = await self.ratings.ratings_by_user_ids(opponent_ids)
         profiles = await self.profiles.profiles_by_user_ids(opponent_ids)
 
-        challenge_ids = [
-            entry.challenge_id for entry in record.rounds if entry.challenge_id is not None
-        ]
-        questions = {
-            challenge.id: challenge.question
-            for challenge in await self.challenges.list_by_ids(challenge_ids)
-        }
-
         summary = _to_summary(record, user_id, opponents, ratings, profiles)
         is_player_one = record.player_one_id == user_id
         return DuoMatchDetail(
             **summary.model_dump(),
-            rounds=[
-                _to_round(entry, questions, is_player_one) for entry in record.rounds
-            ],
             my_hp_left=(
                 record.player_one_hp_left if is_player_one else record.player_two_hp_left
             ),
@@ -290,42 +279,4 @@ def _to_summary(
         duration_seconds=record.duration_seconds,
         finished_at=record.finished_at,
         created_at=record.created_at,
-    )
-
-
-def _to_round(
-    entry: DuoMatchRound, questions: dict[str, str], is_player_one: bool
-) -> DuoRoundRead:
-    return DuoRoundRead(
-        round_index=entry.round_index,
-        challenge_id=entry.challenge_id,
-        question=questions.get(entry.challenge_id) if entry.challenge_id else None,
-        my_option_id=(
-            entry.player_one_option_id if is_player_one else entry.player_two_option_id
-        ),
-        opponent_option_id=(
-            entry.player_two_option_id if is_player_one else entry.player_one_option_id
-        ),
-        my_correct=entry.player_one_correct if is_player_one else entry.player_two_correct,
-        opponent_correct=(
-            entry.player_two_correct if is_player_one else entry.player_one_correct
-        ),
-        my_elapsed_ms=(
-            entry.player_one_elapsed_ms if is_player_one else entry.player_two_elapsed_ms
-        ),
-        opponent_elapsed_ms=(
-            entry.player_two_elapsed_ms if is_player_one else entry.player_one_elapsed_ms
-        ),
-        my_points=entry.player_one_points if is_player_one else entry.player_two_points,
-        opponent_points=entry.player_two_points if is_player_one else entry.player_one_points,
-        my_damage=entry.player_one_damage if is_player_one else entry.player_two_damage,
-        opponent_damage=(
-            entry.player_two_damage if is_player_one else entry.player_one_damage
-        ),
-        my_hp_after=entry.player_one_hp_after if is_player_one else entry.player_two_hp_after,
-        opponent_hp_after=(
-            entry.player_two_hp_after if is_player_one else entry.player_one_hp_after
-        ),
-        my_combo=entry.player_one_combo if is_player_one else entry.player_two_combo,
-        opponent_combo=entry.player_two_combo if is_player_one else entry.player_one_combo,
     )

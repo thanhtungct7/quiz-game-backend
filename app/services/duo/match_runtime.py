@@ -1,20 +1,25 @@
-"""The duo match engine: matchmaking, round loop, grading and teardown.
+"""The duo match engine: matchmaking, the realtime loop, grading and teardown.
 
-One `asyncio.Task` per match drives the whole game (`_run_match`). A round ends
-either when both connected players have answered — the task waits on an
-`asyncio.Event` — or when the timer expires, whichever comes first. Because the
-loop owns its own timing there are no detached callbacks to leak when a room is
-torn down; cancelling the task cancels the match.
+One `asyncio.Task` per match drives the whole game (`_run_match`). There are no
+rounds and no lock step: each player holds their own deck of questions and
+works through it at their own pace, and a correct answer lands its blow on the
+tick the tap arrives rather than at the end of a shared round. Whoever answers
+first strikes first, and a wrong answer sends its question to the back of that
+player's own deck to be met again.
 
-Answer timing is measured here, from `round_started_at`, and never taken from
-the client.
+Because the loop owns its own timing there are no detached callbacks to leak
+when a room is torn down; cancelling the task cancels the match.
+
+Answer timing is measured here, from the instant the question was pushed to
+that player, and never taken from the client.
 """
 
 import asyncio
 import contextlib
 import logging
 import time
-from datetime import UTC, datetime, timedelta
+from collections import deque
+from datetime import UTC, datetime
 from uuid import uuid4
 
 from fastapi import WebSocket
@@ -24,9 +29,9 @@ from app.core.config import settings as app_settings
 from app.models.auth.user import User
 from app.models.duo.duo_match import DuoMatchEndReason, DuoMatchMode, DuoMatchStatus
 from app.models.game.skill import SkillEffect
-from app.schemas.content.course_content import ChallengePublicRead
 from app.schemas.duo.events import (
-    AnswerOutcome,
+    ActiveEffectRead,
+    AnswerResultData,
     BlowRead,
     ChatMessageData,
     ConnectedData,
@@ -41,27 +46,20 @@ from app.schemas.duo.events import (
     MatchStartedData,
     OpponentAnsweredData,
     OpponentDisconnectedData,
+    PongData,
+    QuestionPushData,
     QueueWaitingData,
     RatingChange,
     RoomCreatedData,
-    RoundResultData,
-    RoundStartData,
     SeasonChangeRead,
     ServerEvent,
     SkillUsedData,
+    StateTickData,
     StreakChangeRead,
     envelope,
 )
 from app.services.auth.avatar_url import resolve_avatar_url
-from app.services.duo.combat import (
-    Blow,
-    apply_damage,
-    award_mana,
-    combo_after,
-    gain_mana,
-    resolve_blow,
-)
-from app.services.duo.loadout import ActiveEffect, EquippedSkill, SkillUseRecord
+from app.services.duo import clock
 from app.services.duo.persistence import (
     DatabaseDuoPersistence,
     DuoPersistence,
@@ -83,9 +81,17 @@ from app.services.duo.state import (
     MatchSettings,
     PlayerConn,
     QueueEntry,
-    RoundRecord,
     SubmittedAnswer,
 )
+from app.services.game.combat import (
+    Blow,
+    apply_damage,
+    award_mana,
+    combo_after,
+    gain_mana,
+    resolve_blow,
+)
+from app.services.game.loadout import ActiveEffect, EquippedSkill, SkillUseRecord
 from app.services.game.settlement import (
     ExpAward,
     GoldAward,
@@ -96,9 +102,6 @@ from app.services.game.settlement import (
 
 logger = logging.getLogger(__name__)
 
-COUNTDOWN_SECONDS = 3.0
-REVEAL_PAUSE_SECONDS = 1.5
-BETWEEN_ROUNDS_SECONDS = 3.0
 DISCONNECT_GRACE_SECONDS = 30
 FINISHED_ROOM_TTL_SECONDS = 60
 WAITING_ROOM_TTL_SECONDS = 600
@@ -133,6 +136,7 @@ class DuoEngine:
                     standing=standing,
                 ).to_read(),
                 active_match_id=match.match_id if match is not None else None,
+                server_time_ms=clock.server_ms(),
             ),
         )
         if match is not None:
@@ -168,7 +172,6 @@ class DuoEngine:
                 ServerEvent.OPPONENT_DISCONNECTED,
                 OpponentDisconnectedData(grace_seconds=DISCONNECT_GRACE_SECONDS),
             )
-            self._close_round_if_everyone_answered(match)
             player.grace_task = asyncio.create_task(self._grace_timer(match, user_id))
 
     async def _reattach(self, match: LiveMatch, user: User, websocket: WebSocket) -> None:
@@ -186,14 +189,12 @@ class DuoEngine:
         if opponent is None or match.status is not DuoMatchStatus.IN_PROGRESS:
             return
 
-        question: ChallengePublicRead | None = None
-        remaining: int | None = None
-        if 0 <= match.round_index < len(match.questions):
-            question = match.questions[match.round_index]
-            if match.round_started_at is not None:
-                spent = match.elapsed_ms() // 1000
-                remaining = max(0, match.settings.time_per_question - spent)
-
+        now = clock.seconds()
+        question = (
+            match.questions[player.current_index]
+            if player.current_index is not None
+            else None
+        )
         await _send(
             websocket,
             ServerEvent.MATCH_RESUME,
@@ -201,23 +202,45 @@ class DuoEngine:
                 match_id=match.match_id,
                 opponent=opponent.to_read(),
                 settings=match.settings.to_read(),
-                round_index=match.round_index,
-                total_rounds=len(match.questions),
+                deck_size=match.deck_size,
+                server_time_ms=clock.to_server_ms(now),
+                deadline_at=clock.to_server_ms(match.deadline_at),
+                # The question the player was on is handed back with its own
+                # token, so an answer given before the drop and one given
+                # after can still be told apart.
+                token=player.question_token,
+                question=question,
+                pushed_at=(
+                    clock.to_server_ms(player.question_pushed_at)
+                    if player.question_pushed_at is not None
+                    else 0
+                ),
+                your_deck_remaining=player.deck_remaining,
+                opponent_deck_remaining=opponent.deck_remaining,
                 your_score=player.score,
                 opponent_score=opponent.score,
-                question=question,
-                seconds_remaining=remaining,
-                already_answered=user.id in match.round_answers,
                 your_hp=player.hp,
+                your_max_hp=player.build.max_hp,
                 opponent_hp=opponent.hp,
+                opponent_max_hp=opponent.build.max_hp,
                 your_mana=player.mana,
                 your_combo=player.combo,
-                you_are_stunned=player.is_stunned_for(match.round_index),
-                your_max_hp=player.build.max_hp,
-                active_effects=player.effects.codes(match.round_index),
+                opponent_combo=opponent.combo,
+                lockout_ends_at=_stamp(player.lockout_until),
+                stunned_until=_stamp(player.stunned_until),
+                effects=_effects_read(player, now),
             ),
         )
         await self._notify_opponent(match, user.id, ServerEvent.OPPONENT_RECONNECTED, None)
+
+    async def pong(self, websocket: WebSocket, client_time_ms: int) -> None:
+        """Echo the client's stamp back beside the server's own, so the client
+        can work out its offset and half the round trip."""
+        await _send(
+            websocket,
+            ServerEvent.PONG,
+            PongData(client_time_ms=client_time_ms, server_time_ms=clock.server_ms()),
+        )
 
     # --- matchmaking --------------------------------------------------------
 
@@ -374,83 +397,172 @@ class DuoEngine:
     # --- gameplay -----------------------------------------------------------
 
     async def submit_answer(
-        self, user_id: str, websocket: WebSocket, round_index: int, option_id: str
+        self, user_id: str, websocket: WebSocket, token: str, option_id: str
     ) -> None:
-        """Grade one answer against the server-held key and close the round
-        once both connected players have answered.
+        """Resolve one answer, here and now.
 
-        `elapsed_ms` is measured from the server's own round clock, so a
-        client cannot inflate its speed bonus by lying about timing.
+        Graded against the key loaded when the match started, so the blow lands
+        on the tick the tap arrived rather than at the end of a round the
+        opponent also has to finish. `elapsed_ms` is measured from this
+        player's own question clock, so a client cannot inflate its speed bonus
+        by lying about timing.
         """
         match = self.registry.match_of_user(user_id)
         if match is None or match.status is not DuoMatchStatus.IN_PROGRESS:
             await _send_error(websocket, ErrorCode.NOT_IN_MATCH, "No match in progress")
             return
-        # An open round is the current index with a live clock; anything else
-        # is a late or replayed submission.
-        if match.round_index != round_index or match.round_started_at is None:
-            await _send_error(websocket, ErrorCode.ROUND_CLOSED, "This round is closed")
-            return
-        if user_id in match.round_answers:
+
+        player = match.players[user_id]
+        index = player.current_index
+        # An open question is this player's own token with a live clock;
+        # anything else is a late or replayed submission.
+        if index is None or player.question_token != token:
             await _send_error(
-                websocket, ErrorCode.ALREADY_ANSWERED, "You already answered this round"
+                websocket, ErrorCode.QUESTION_CLOSED, "That question is no longer open"
             )
             return
-        player = match.players[user_id]
-        if player.is_stunned_for(round_index):
-            await _send_error(websocket, ErrorCode.STUNNED, "You are stunned this round")
+        now = clock.seconds()
+        # The question stays on screen through a stun, and its clock keeps
+        # running: what a five-answer combo takes from the opponent is exactly
+        # those seconds.
+        if player.is_stunned(now):
+            await _send_error(websocket, ErrorCode.STUNNED, "You are stunned")
             return
 
-        question = match.questions[round_index]
+        question = match.questions[index]
         if option_id not in {option.id for option in question.options}:
             await _send_error(
                 websocket, ErrorCode.INVALID_OPTION, "That option is not on this question"
             )
             return
 
-        elapsed_ms = match.elapsed_ms()
-        # The round runs on one clock and one timer, but each player can have
-        # their own deadline inside it, so a late answer is rejected here
-        # rather than by shortening the round.
-        if elapsed_ms > player.effective_limit_ms:
-            await _send_error(websocket, ErrorCode.ROUND_CLOSED, "Your time is up")
-            return
-        is_correct = option_id in match.answer_key.get(question.id, [])
-        points = award_points(is_correct, elapsed_ms, match.settings.time_per_question)
+        elapsed_ms = player.elapsed_ms(now)
+        # Shut the question before anything is resolved, so a double tap in the
+        # same millisecond cannot land two blows.
+        player.question_token = None
+        player.question_pushed_at = None
+        player.current_index = None
 
-        match.round_answers[user_id] = SubmittedAnswer(
+        correct_ids = match.answer_key.get(question.id, [])
+        is_correct = option_id in correct_ids
+        answer = SubmittedAnswer(
+            question_index=index,
+            question_id=question.id,
             option_id=option_id,
             elapsed_ms=elapsed_ms,
             is_correct=is_correct,
-            points=points,
+            points=award_points(is_correct, elapsed_ms, match.settings.time_per_question),
+            correct_option_ids=list(correct_ids),
+            explanation=match.explanations.get(question.id),
         )
-        player.score += points
-        player.correct_count += 1 if is_correct else 0
-        player.total_elapsed_ms += elapsed_ms
 
-        await self._notify_opponent(
-            match,
-            user_id,
-            ServerEvent.ROUND_OPPONENT_ANSWERED,
-            OpponentAnsweredData(round_index=round_index),
+        opponent = match.opponent_of(user_id)
+        blow = self._settle_answer(match, player, opponent, answer, now)
+        if not is_correct:
+            # To the back of the deck, to be met again later. This is the whole
+            # point of the deck: a question is not survived, it is learned.
+            player.deck.append(index)
+        lockout_ms = (
+            clock.CORRECT_LOCKOUT_MS if is_correct else clock.WRONG_LOCKOUT_MS
         )
-        self._close_round_if_everyone_answered(match)
+        player.lockout_until = now + lockout_ms / 1000.0
 
-    async def use_skill(
-        self, user_id: str, websocket: WebSocket, round_index: int, skill_code: str
-    ) -> None:
-        """Cast one equipped skill in the open round.
+        await _send(
+            player.websocket,
+            ServerEvent.ANSWER_RESULT,
+            AnswerResultData(
+                token=token,
+                correct=is_correct,
+                option_id=option_id,
+                elapsed_ms=elapsed_ms,
+                correct_option_ids=answer.correct_option_ids,
+                explanation=answer.explanation,
+                points=answer.points,
+                blow=_blow_read(blow),
+                your_score=player.score,
+                your_mana=player.mana,
+                your_combo=player.combo,
+                your_deck_remaining=player.deck_remaining,
+                opponent_hp=max(0, opponent.hp) if opponent is not None else 0,
+                lockout_ends_at=_stamp(player.lockout_until),
+            ),
+        )
+        if opponent is None:
+            return
+        await _send(
+            opponent.websocket,
+            ServerEvent.OPPONENT_ANSWERED,
+            OpponentAnsweredData(
+                correct=is_correct,
+                damage=blow.final_damage if blow is not None else 0,
+                is_critical=blow.is_critical if blow is not None else False,
+                your_hp=max(0, opponent.hp),
+                opponent_score=player.score,
+                opponent_combo=player.combo,
+                opponent_deck_remaining=player.deck_remaining,
+                your_stunned_until=_stamp(opponent.stunned_until),
+            ),
+        )
+
+    def _settle_answer(
+        self,
+        match: LiveMatch,
+        player: PlayerConn,
+        opponent: PlayerConn | None,
+        answer: SubmittedAnswer,
+        now: float,
+    ) -> Blow | None:
+        """Turn one answer into points, mana, a combo and possibly a blow.
+
+        The blow is applied to the opponent immediately. That is the whole
+        change from the lock-step engine: there is no round to wait for, so
+        whoever answers first is the one whose blow lands first.
+        """
+        limit = match.settings.time_per_question
+
+        player.answers_given += 1
+        player.score += answer.points
+        player.total_elapsed_ms += answer.elapsed_ms
+        if answer.is_correct or not self._combo_survives(player, now):
+            player.combo = combo_after(player.combo, answer.is_correct)
+        player.best_combo = max(player.best_combo, player.combo)
+        player.mana = gain_mana(
+            player.mana, award_mana(answer.is_correct, answer.elapsed_ms, limit)
+        )
+        if not answer.is_correct:
+            return None
+
+        player.correct_count += 1
+        blow = resolve_blow(
+            is_correct=True,
+            elapsed_ms=answer.elapsed_ms,
+            time_limit_seconds=limit,
+            combo_count=player.combo,
+            attacker_damage_permille=self._attack_permille(player, opponent, now),
+            defender_reduction_permille=self._defence_permille(opponent, now),
+        )
+        if opponent is not None:
+            opponent.hp = apply_damage(opponent.hp, blow.final_damage)
+            if blow.stuns_opponent:
+                # Seconds rather than a round to sit out: there are no rounds
+                # left to skip, so a combo takes the opponent's clock instead.
+                opponent.stunned_until = max(
+                    opponent.stunned_until, now + clock.STUN_SECONDS
+                )
+        return blow
+
+    async def use_skill(self, user_id: str, websocket: WebSocket, skill_code: str) -> None:
+        """Cast one equipped skill.
 
         Everything is checked against the loadout resolved at match start, so
-        this never touches the database: a live round must not wait on a query,
-        and a player must not be able to re-equip mid-fight.
+        this never touches the database: a live match must not wait on a query,
+        and a player must not be able to re-equip mid-fight. Nothing here is
+        tied to a question -- raising a shield while reading the last
+        explanation is exactly when it is worth the mana.
         """
         match = self.registry.match_of_user(user_id)
         if match is None or match.status is not DuoMatchStatus.IN_PROGRESS:
             await _send_error(websocket, ErrorCode.NOT_IN_MATCH, "No match in progress")
-            return
-        if match.round_index != round_index or match.round_started_at is None:
-            await _send_error(websocket, ErrorCode.ROUND_NOT_OPEN, "This round is closed")
             return
 
         player = match.players[user_id]
@@ -458,8 +570,10 @@ class DuoEngine:
         if opponent is None:
             await _send_error(websocket, ErrorCode.NOT_IN_MATCH, "No opponent")
             return
-        if player.is_stunned_for(round_index):
-            await _send_error(websocket, ErrorCode.STUNNED, "You are stunned this round")
+
+        now = clock.seconds()
+        if player.is_stunned(now):
+            await _send_error(websocket, ErrorCode.STUNNED, "You are stunned")
             return
 
         skill = player.build.skill(skill_code)
@@ -468,37 +582,38 @@ class DuoEngine:
                 websocket, ErrorCode.SKILL_NOT_EQUIPPED, "That skill is not equipped"
             )
             return
-        if skill_code in player.skills_used_this_round:
+        if now < player.skill_ready_at.get(skill_code, 0.0):
             await _send_error(
-                websocket,
-                ErrorCode.SKILL_ALREADY_USED_THIS_ROUND,
-                "That skill has already been used this round",
+                websocket, ErrorCode.SKILL_ON_COOLDOWN, "That skill is still recharging"
             )
             return
         if player.mana < skill.mana_cost:
             await _send_error(websocket, ErrorCode.NOT_ENOUGH_MANA, "Not enough mana")
             return
-        # Revealing options after answering would be pointless, and letting it
-        # through would still cost the player their mana.
-        if skill.effect is SkillEffect.REMOVE_OPTIONS and user_id in match.round_answers:
+        # Revealing options with no question on screen would be pointless, and
+        # letting it through would still cost the player their mana.
+        if skill.effect is SkillEffect.REMOVE_OPTIONS and player.current_index is None:
             await _send_error(
-                websocket, ErrorCode.ROUND_NOT_OPEN, "You have already answered"
+                websocket, ErrorCode.QUESTION_CLOSED, "There is no question to narrow"
             )
             return
 
         player.mana -= skill.mana_cost
-        player.skills_used_this_round.add(skill_code)
+        ready_again = now + _cooldown_seconds(skill)
+        player.skill_ready_at[skill_code] = ready_again
         match.skill_log.append(
             SkillUseRecord(
-                round_index=round_index,
+                # The column still means "how far into the match", which with
+                # no rounds left to count is the caster's answer count.
+                round_index=player.answers_given,
                 user_id=user_id,
                 skill_id=skill.skill_id,
                 skill_code=skill.code,
                 mana_spent=skill.mana_cost,
             )
         )
-        private = self._apply_skill(match, player, opponent, skill, round_index)
-        await self._broadcast_skill_used(match, user_id, skill, private)
+        private = self._apply_skill(match, player, opponent, skill, now)
+        await self._broadcast_skill_used(match, user_id, skill, private, ready_again)
 
     def _apply_skill(
         self,
@@ -506,7 +621,7 @@ class DuoEngine:
         player: PlayerConn,
         opponent: PlayerConn,
         skill: EquippedSkill,
-        round_index: int,
+        now: float,
     ) -> dict[str, object] | None:
         """Do what the skill does, and return anything only the caster may see."""
         effect = skill.effect
@@ -518,24 +633,34 @@ class DuoEngine:
             opponent.mana = max(0, opponent.mana - skill.magnitude)
             return None
         if effect is SkillEffect.REMOVE_OPTIONS:
-            return {"removed_option_ids": self._removed_options(match, skill.magnitude)}
+            return {"removed_option_ids": self._removed_options(match, player, skill.magnitude)}
+        if effect is SkillEffect.TIME_PENALTY:
+            # Authored as "shorten the opponent's clock by N seconds". No
+            # question has a deadline any more, so it takes those N seconds off
+            # them the other way round: they wait that much longer before their
+            # next question arrives.
+            opponent.lockout_until = max(opponent.lockout_until, now) + skill.magnitude
+            return None
 
-        # The rest stand until they are spent. A duration of zero means this
-        # round; one means the round after it.
-        target = opponent if effect is SkillEffect.TIME_PENALTY else player
-        target.add_effect(
+        # The rest stand until they are spent or expire. A skill authored for
+        # one round stands for `SECONDS_PER_ROUND` seconds.
+        player.add_effect(
             ActiveEffect(
                 effect=effect,
                 magnitude=skill.magnitude,
-                expires_after_round=round_index + skill.duration_rounds,
+                expires_at=now + max(1, skill.duration_rounds) * clock.SECONDS_PER_ROUND,
                 source_code=skill.code,
             )
         )
         return None
 
-    def _removed_options(self, match: LiveMatch, count: int) -> list[str]:
+    def _removed_options(
+        self, match: LiveMatch, player: PlayerConn, count: int
+    ) -> list[str]:
         """Wrong options to hide from the caster, never broadcast."""
-        question = match.questions[match.round_index]
+        if player.current_index is None:
+            return []
+        question = match.questions[player.current_index]
         correct = set(match.answer_key.get(question.id, []))
         wrong = [option.id for option in question.options if option.id not in correct]
         # Always leave at least one wrong answer standing, so a reveal narrows
@@ -548,25 +673,28 @@ class DuoEngine:
         caster_id: str,
         skill: EquippedSkill,
         private: dict[str, object] | None,
+        ready_again: float,
     ) -> None:
         """Both sides see what was cast; only the caster sees the private part."""
         for user_id, player in match.players.items():
             other = match.opponent_of(user_id)
+            mine = user_id == caster_id
             await _send(
                 player.websocket,
                 ServerEvent.SKILL_USED,
                 SkillUsedData(
-                    round_index=match.round_index,
                     user_id=caster_id,
                     skill_code=skill.code,
                     skill_name=skill.name,
                     effect=skill.effect,
                     magnitude=skill.magnitude,
                     mana_spent=skill.mana_cost,
-                    your_hp=player.hp,
-                    opponent_hp=other.hp if other is not None else 0,
+                    your_hp=max(0, player.hp),
+                    opponent_hp=max(0, other.hp) if other is not None else 0,
                     your_mana=player.mana,
-                    private=private if user_id == caster_id else None,
+                    ready_again_at=_stamp(ready_again) if mine else 0,
+                    lockout_ends_at=_stamp(player.lockout_until),
+                    private=private if mine else None,
                 ),
             )
 
@@ -597,28 +725,20 @@ class DuoEngine:
     # --- match loop ---------------------------------------------------------
 
     async def _run_match(self, match: LiveMatch) -> None:
-        """The task body that drives one match end-to-end: countdown, every
-        round in sequence, then a normal finish — or an abort if anything
-        throws."""
+        """The task body: countdown, the first question for each player, then
+        advance the match until one of them falls or clears their deck."""
         try:
-            await asyncio.sleep(COUNTDOWN_SECONDS)
+            await asyncio.sleep(clock.COUNTDOWN_SECONDS)
             if not await self._prepare(match):
                 return
-            for index in range(len(match.questions)):
+            now = clock.seconds()
+            for player in match.players.values():
+                await self._push_question(match, player, now)
+            while match.status is DuoMatchStatus.IN_PROGRESS:
+                await asyncio.sleep(clock.TICK_SECONDS)
                 if match.status is not DuoMatchStatus.IN_PROGRESS:
-                    break
-                await self._run_round(match, index)
-                # A knockout stops the match, but only after the round that
-                # landed it has broadcast its result.
-                if match.ko_pending:
-                    break
-            if match.status is DuoMatchStatus.IN_PROGRESS:
-                await self._finish(
-                    match,
-                    DuoMatchEndReason.KNOCKOUT
-                    if match.ko_pending
-                    else DuoMatchEndReason.COMPLETED,
-                )
+                    return
+                await self._tick(match, clock.seconds())
         except asyncio.CancelledError:
             raise
         except Exception:
@@ -626,10 +746,10 @@ class DuoEngine:
             await self._abort(match)
 
     async def _prepare(self, match: LiveMatch) -> bool:
-        """Draw the question set and persist the match row before round one.
+        """Draw the deck and persist the match row before the first question.
 
         Returns False (and aborts the match) when there aren't enough
-        questions to play, so the caller knows not to start the round loop.
+        questions to play, so the caller knows not to start the loop.
         """
         question_set = await self.persistence.draw_questions(match.settings)
         if len(question_set.questions) < MIN_PLAYABLE_QUESTIONS:
@@ -652,179 +772,171 @@ class DuoEngine:
             return False
         # Whatever the start charged is now owed back if the match never runs.
         match.energy_spent = True
-        for user_id, player in match.players.items():
-            player.loadout = loadouts.get(user_id)
-            player.hp = player.build.max_hp
-            player.mana = player.build.starting_mana
 
         match.questions = question_set.questions
         match.answer_key = question_set.answer_key
         match.explanations = question_set.explanations
+
+        now = clock.seconds()
+        for user_id, player in match.players.items():
+            player.loadout = loadouts.get(user_id)
+            player.hp = player.build.max_hp
+            player.mana = player.build.starting_mana
+            # Both decks hold the same questions in the same order: the two
+            # players are running the same race, and only their own mistakes
+            # make the decks diverge.
+            player.deck = deque(range(len(match.questions)))
+
         match.status = DuoMatchStatus.IN_PROGRESS
+        match.started_at = now
+        match.deadline_at = now + clock.match_time_cap(match.settings)
         match.started_wall = datetime.now(UTC)
 
         await self.persistence.create_match(match)
         match.persisted = True
 
-        await self._broadcast(
-            match,
-            ServerEvent.MATCH_STARTED,
-            MatchStartedData(match_id=match.match_id, total_rounds=len(match.questions)),
-        )
+        for user_id, player in match.players.items():
+            opponent = match.opponent_of(user_id)
+            await _send(
+                player.websocket,
+                ServerEvent.MATCH_STARTED,
+                MatchStartedData(
+                    match_id=match.match_id,
+                    deck_size=match.deck_size,
+                    speed_reference_seconds=match.settings.time_per_question,
+                    tick_hz=clock.TICK_HZ,
+                    snapshot_hz=clock.SNAPSHOT_HZ,
+                    server_time_ms=clock.to_server_ms(now),
+                    deadline_at=clock.to_server_ms(match.deadline_at),
+                    your_hp=player.hp,
+                    your_max_hp=player.build.max_hp,
+                    your_mana=player.mana,
+                    opponent_hp=opponent.hp if opponent is not None else 0,
+                    opponent_max_hp=opponent.build.max_hp if opponent is not None else 0,
+                ),
+            )
         return True
 
-    async def _run_round(self, match: LiveMatch, index: int) -> None:
-        """Broadcast one question, wait for both answers or the timer, then
-        reveal the result. Runs synchronously inside the match task, so the
-        round's lifetime is exactly this call."""
-        question = match.questions[index]
-        limit = match.settings.time_per_question
+    async def _tick(self, match: LiveMatch, now: float) -> None:
+        """One step of the simulation.
 
-        match.round_index = index
-        match.round_answers = {}
-        match.round_closed = asyncio.Event()
+        The order matters. Effects are aged and empty decks latched first, so
+        the end check below sees the same reading for both players; a match
+        that is already over neither pushes a question nobody will answer nor
+        broadcasts a snapshot of a fight that has stopped.
+        """
         for player in match.players.values():
-            player.skills_used_this_round = set()
-            player.effects.prune(index)
-            # A time penalty shortens this player's own deadline without
-            # touching the round's single timer.
-            penalty = player.effects.consume(SkillEffect.TIME_PENALTY, index)
-            seconds = limit - (penalty.magnitude if penalty is not None else 0)
-            player.effective_limit_ms = max(1, seconds) * 1000
-        match.round_started_at = time.monotonic()
+            player.effects.prune(now)
+            # Latched only once the lockout is up, so the player who just
+            # cleared their deck still gets the beat that shows their last
+            # blow landing before the result screen takes over.
+            if (
+                player.question_token is None
+                and not player.deck
+                and now >= player.ready_at()
+            ):
+                player.deck_cleared = True
 
-        await self._broadcast_round_start(match, index, question, limit)
-
-        closed_early = True
-        try:
-            await asyncio.wait_for(match.round_closed.wait(), timeout=limit)
-        except TimeoutError:
-            closed_early = False
-
-        # Stop the clock before pausing, so nothing lands after the round shut.
-        match.round_started_at = None
-        if closed_early:
-            await asyncio.sleep(REVEAL_PAUSE_SECONDS)
-
-        if match.status is not DuoMatchStatus.IN_PROGRESS:
+        end_reason = _end_reason(match, now)
+        if end_reason is not None:
+            await self._finish(match, end_reason)
             return
 
-        blows, hp_after = self._settle_round_damage(match)
-        match.rounds_log.append(
-            RoundRecord(
-                round_index=index,
-                challenge_id=question.id,
-                answers=dict(match.round_answers),
-                blows=blows,
-                hp_after=hp_after,
-            )
-        )
-        await self._broadcast_round_result(match, index, question, blows)
-        await asyncio.sleep(BETWEEN_ROUNDS_SECONDS)
+        for player in match.players.values():
+            if player.question_token is None and player.deck and now >= player.ready_at():
+                await self._push_question(match, player, now)
 
-    def _settle_round_damage(
-        self, match: LiveMatch
-    ) -> tuple[dict[str, Blow], dict[str, int]]:
-        """Resolve both attacks for the round that just closed.
+        if now - match.last_snapshot_at >= clock.SNAPSHOT_SECONDS:
+            match.last_snapshot_at = now
+            await self._broadcast_snapshot(match, now)
 
-        Every blow is computed from the health both players started the round
-        with, and only then applied. Applying damage the moment an answer
-        arrives would let whoever pressed first knock the other out before they
-        had a chance to answer the same question.
+    async def _push_question(
+        self, match: LiveMatch, player: PlayerConn, now: float
+    ) -> None:
+        """Put this player's next question on their screen.
+
+        Only their own: the two players share a deck's contents, never a
+        position in it.
         """
-        limit = match.settings.time_per_question
-        blows: dict[str, Blow] = {}
+        index = player.deck.popleft()
+        question = match.questions[index]
+        retry = index in player.seen
+        player.seen.add(index)
+        player.current_index = index
+        player.question_token = uuid4().hex
+        player.question_pushed_at = now
+        await _send(
+            player.websocket,
+            ServerEvent.QUESTION_PUSH,
+            QuestionPushData(
+                token=player.question_token,
+                question=question,
+                pushed_at=clock.to_server_ms(now),
+                deck_remaining=player.deck_remaining,
+                retry=retry,
+            ),
+        )
 
+    async def _broadcast_snapshot(self, match: LiveMatch, now: float) -> None:
+        """The whole match, per player: every "your"/"opponent" pair is
+        inverted between the two sides, so this is not a broadcast."""
+        stamp = clock.to_server_ms(now)
         for user_id, player in match.players.items():
-            answer = match.round_answers.get(user_id)
-            is_correct = answer is not None and answer.is_correct
-            opponent = match.opponent_of(user_id)
-
-            if is_correct or not self._combo_survives(player, match.round_index):
-                player.combo = combo_after(player.combo, is_correct)
-            player.best_combo = max(player.best_combo, player.combo)
-
-            if answer is not None:
-                # No answer at all earns nothing. Paying mana for sitting out
-                # would make waiting a viable way to charge a skill.
-                player.mana = gain_mana(
-                    player.mana, award_mana(is_correct, answer.elapsed_ms, limit)
-                )
-
-            blows[user_id] = resolve_blow(
-                is_correct=is_correct,
-                elapsed_ms=answer.elapsed_ms if answer is not None else 0,
-                time_limit_seconds=limit,
-                combo_count=player.combo,
-                attacker_damage_permille=self._attack_permille(
-                    player, opponent, match.round_index
-                ),
-                defender_reduction_permille=self._defence_permille(
-                    opponent, match.round_index
-                ),
-            )
-
-        for user_id, blow in blows.items():
             opponent = match.opponent_of(user_id)
             if opponent is None:
                 continue
-            opponent.hp = apply_damage(opponent.hp, blow.final_damage)
-            if blow.stuns_opponent:
-                # The round after this one, never the one being settled.
-                opponent.stunned_round_index = match.round_index + 1
+            await _send(
+                player.websocket,
+                ServerEvent.STATE_TICK,
+                StateTickData(
+                    t=stamp,
+                    your_hp=max(0, player.hp),
+                    your_max_hp=player.build.max_hp,
+                    your_mana=player.mana,
+                    your_combo=player.combo,
+                    your_score=player.score,
+                    your_deck_remaining=player.deck_remaining,
+                    opponent_hp=max(0, opponent.hp),
+                    opponent_max_hp=opponent.build.max_hp,
+                    opponent_combo=opponent.combo,
+                    opponent_score=opponent.score,
+                    opponent_deck_remaining=opponent.deck_remaining,
+                    deadline_at=clock.to_server_ms(match.deadline_at),
+                    lockout_ends_at=_stamp(player.lockout_until),
+                    stunned_until=_stamp(player.stunned_until),
+                    effects=_effects_read(player, now),
+                ),
+            )
 
-        if any(player.hp <= 0 for player in match.players.values()):
-            match.ko_pending = True
+    # --- modifiers ----------------------------------------------------------
 
-        return blows, {user_id: p.hp for user_id, p in match.players.items()}
-
-    def _combo_survives(self, player: PlayerConn, round_index: int) -> bool:
-        """Whether a miss is forgiven this round by a standing COMBO_KEEP."""
-        return player.effects.consume(SkillEffect.COMBO_KEEP, round_index) is not None
+    def _combo_survives(self, player: PlayerConn, now: float) -> bool:
+        """Whether a miss is forgiven by a standing COMBO_KEEP."""
+        return player.effects.consume(SkillEffect.COMBO_KEEP, now) is not None
 
     def _attack_permille(
-        self, player: PlayerConn, opponent: PlayerConn | None, round_index: int
+        self, player: PlayerConn, opponent: PlayerConn | None, now: float
     ) -> int:
         """The attacker's damage scaling: class, then whatever they cast.
 
         Skills change this number; they never add a branch to `resolve_blow`.
         """
         permille = player.build.damage_permille
-        boost = player.effects.consume(SkillEffect.DOUBLE_DAMAGE, round_index)
+        boost = player.effects.consume(SkillEffect.DOUBLE_DAMAGE, now)
         if boost is not None:
             permille = permille * boost.magnitude // 100
-        execute = player.effects.consume(SkillEffect.EXECUTE, round_index)
+        execute = player.effects.consume(SkillEffect.EXECUTE, now)
         # An execute only pays off against an opponent already low enough,
         # which is checked now rather than when the skill was cast.
         if execute is not None and opponent is not None and 0 < opponent.hp <= execute.magnitude:
             permille *= 2
         return permille
 
-    def _defence_permille(self, player: PlayerConn | None, round_index: int) -> int:
+    def _defence_permille(self, player: PlayerConn | None, now: float) -> int:
         if player is None:
             return 0
-        shield = player.effects.consume(SkillEffect.DAMAGE_REDUCTION, round_index)
+        shield = player.effects.consume(SkillEffect.DAMAGE_REDUCTION, now)
         return shield.magnitude if shield is not None else 0
-
-    def _close_round_if_everyone_answered(self, match: LiveMatch) -> None:
-        """Advance as soon as nobody is still expected to answer.
-
-        Only connected players count, so a player dropping mid-round does not
-        leave the other one waiting out the full timer. A stunned player is not
-        expected either -- they cannot answer, so counting them would hold the
-        round open until the timer expired every single time.
-
-        When the stunned player is the only one left connected, `expected` is
-        empty and the round correctly runs its full course: there is nobody
-        able to close it early.
-        """
-        expected = {
-            player.user_id
-            for player in match.connected_players()
-            if not player.is_stunned_for(match.round_index)
-        }
-        if expected and expected <= set(match.round_answers):
-            match.round_closed.set()
 
     # --- ending -------------------------------------------------------------
 
@@ -838,11 +950,12 @@ class DuoEngine:
         and rating changes, then push MATCH_FINISHED to both players.
 
         Guarded by the FINISHED status check so a race between a timeout,
-        a forfeit and normal completion can only ever run this once.
+        a forfeit and a knockout can only ever run this once.
         """
         if match.status is DuoMatchStatus.FINISHED:
             return
         match.status = DuoMatchStatus.FINISHED
+        match.end_reason = end_reason
         match.finished_at = time.monotonic()
         self._cancel_task(match)
         self._cancel_grace_timers(match)
@@ -897,7 +1010,9 @@ class DuoEngine:
                     opponent_score=opponent.score,
                     your_correct=player.correct_count,
                     opponent_correct=opponent.correct_count,
-                    total_rounds=len(match.questions),
+                    deck_size=match.deck_size,
+                    your_deck_cleared=player.deck_cleared,
+                    opponent_deck_cleared=opponent.deck_cleared,
                     duration_seconds=duration,
                     rating=RatingChange(
                         before=change.before if change else player.rating,
@@ -906,8 +1021,8 @@ class DuoEngine:
                     ),
                     exp=_exp_change(exp),
                     gold=_gold_change(gold),
-                    your_hp_left=player.hp,
-                    opponent_hp_left=opponent.hp,
+                    your_hp_left=max(0, player.hp),
+                    opponent_hp_left=max(0, opponent.hp),
                     loot=_loot_read(rewards.loot.get(user_id)),
                     season=_season_read(rewards.season.get(user_id)),
                     streak=_streak_read(rewards.streak.get(user_id)),
@@ -1017,66 +1132,6 @@ class DuoEngine:
                 ),
             )
 
-    async def _broadcast_round_start(
-        self, match: LiveMatch, index: int, question: ChallengePublicRead, limit: int
-    ) -> None:
-        """Sent per player rather than broadcast: health, mana and the stun
-        flag differ between the two sides."""
-        deadline = datetime.now(UTC) + timedelta(seconds=limit)
-        for user_id, player in match.players.items():
-            opponent = match.opponent_of(user_id)
-            if opponent is None:
-                continue
-            await _send(
-                player.websocket,
-                ServerEvent.ROUND_START,
-                RoundStartData(
-                    round_index=index,
-                    total_rounds=len(match.questions),
-                    question=question,
-                    time_limit_seconds=limit,
-                    deadline_at=deadline,
-                    your_hp=player.hp,
-                    opponent_hp=opponent.hp,
-                    your_mana=player.mana,
-                    your_combo=player.combo,
-                    your_time_limit_seconds=player.effective_limit_ms // 1000,
-                    you_are_stunned=player.is_stunned_for(index),
-                ),
-            )
-
-    async def _broadcast_round_result(
-        self,
-        match: LiveMatch,
-        index: int,
-        question: ChallengePublicRead,
-        blows: dict[str, Blow],
-    ) -> None:
-        correct_ids = match.answer_key.get(question.id, [])
-        for user_id, player in match.players.items():
-            opponent = match.opponent_of(user_id)
-            if opponent is None:
-                continue
-            await _send(
-                player.websocket,
-                ServerEvent.ROUND_RESULT,
-                RoundResultData(
-                    round_index=index,
-                    correct_option_ids=correct_ids,
-                    explanation=match.explanations.get(question.id),
-                    you=_outcome_of(match.round_answers.get(user_id)),
-                    opponent=_outcome_of(match.round_answers.get(opponent.user_id)),
-                    your_score=player.score,
-                    opponent_score=opponent.score,
-                    your_blow=_blow_read(blows.get(user_id)),
-                    opponent_blow=_blow_read(blows.get(opponent.user_id)),
-                    your_hp=player.hp,
-                    opponent_hp=opponent.hp,
-                    your_mana=player.mana,
-                    your_combo=player.combo,
-                ),
-            )
-
     async def _broadcast(
         self, match: LiveMatch, event: ServerEvent, data: BaseModel | None
     ) -> None:
@@ -1124,6 +1179,21 @@ def _build_match(
     return match
 
 
+def _end_reason(match: LiveMatch, now: float) -> DuoMatchEndReason | None:
+    """Why the match should stop, or None to keep playing.
+
+    A knockout outranks a cleared deck: if the answer that emptied someone's
+    deck also dropped the other player to zero, the fight is what ended it.
+    """
+    if any(player.is_down for player in match.players.values()):
+        return DuoMatchEndReason.KNOCKOUT
+    if any(player.deck_cleared for player in match.players.values()):
+        return DuoMatchEndReason.DECK_CLEARED
+    if match.deadline_at > 0 and now >= match.deadline_at:
+        return DuoMatchEndReason.TIME_UP
+    return None
+
+
 def _decide_outcomes(
     match: LiveMatch,
     one_id: str,
@@ -1131,7 +1201,7 @@ def _decide_outcomes(
     forfeit_user_id: str | None,
 ) -> dict[str, MatchOutcome]:
     """A forfeit always loses regardless of score; otherwise fall back to
-    the normal score/speed tiebreak in scoring.decide_outcome."""
+    the normal deck/health/score tiebreak in scoring.decide_outcome."""
     if forfeit_user_id is not None:
         other_id = two_id if forfeit_user_id == one_id else one_id
         return {forfeit_user_id: MatchOutcome.LOSE, other_id: MatchOutcome.WIN}
@@ -1146,7 +1216,8 @@ def _totals(player: PlayerConn) -> PlayerTotals:
         score=player.score,
         correct_count=player.correct_count,
         total_elapsed_ms=player.total_elapsed_ms,
-        hp_left=player.hp,
+        hp_left=max(0, player.hp),
+        deck_cleared=player.deck_cleared,
     )
 
 
@@ -1156,28 +1227,52 @@ def _duration_seconds(match: LiveMatch) -> int:
     return max(0, int((datetime.now(UTC) - match.started_wall).total_seconds()))
 
 
-def _outcome_of(answer: SubmittedAnswer | None) -> AnswerOutcome:
-    if answer is None:
-        return AnswerOutcome(option_id=None, correct=False, elapsed_ms=None, points=0)
-    return AnswerOutcome(
-        option_id=answer.option_id,
-        correct=answer.is_correct,
-        elapsed_ms=answer.elapsed_ms,
-        points=answer.points,
+def _stamp(at: float) -> int:
+    """A monotonic instant on the published scale, or zero when it is unset.
+
+    Zero rather than a stamp because an unset deadline is a monotonic zero,
+    which converts to a large negative instant that means nothing to a client.
+    """
+    return clock.to_server_ms(at) if at > 0 else 0
+
+
+def _effects_read(player: PlayerConn, now: float) -> list[ActiveEffectRead]:
+    return [
+        ActiveEffectRead(
+            code=effect.source_code,
+            effect=effect.effect,
+            magnitude=effect.magnitude,
+            expires_at=clock.to_server_ms(effect.expires_at),
+        )
+        for effect in player.effects.effects
+        if effect.expires_at >= now
+    ]
+
+
+def _cooldown_seconds(skill: EquippedSkill) -> float:
+    """How long before this skill may be cast again.
+
+    Its own duration, so an effect can never be stacked on top of itself, and
+    never less than the floor -- a zero-duration skill would otherwise be
+    limited by mana alone, which is not a fast enough gate when questions
+    arrive back to back.
+    """
+    return max(
+        clock.SKILL_MIN_COOLDOWN_SECONDS, skill.duration_rounds * clock.SECONDS_PER_ROUND
     )
 
 
-def _blow_read(blow: Blow | None) -> BlowRead:
-    """A player with no blow this round reports an empty one."""
-    resolved = blow if blow is not None else Blow.none()
+def _blow_read(blow: Blow | None) -> BlowRead | None:
+    if blow is None:
+        return None
     return BlowRead(
-        damage=resolved.final_damage,
-        strike=resolved.strike,
-        combo_count=resolved.combo_count,
-        combo_multiplier=resolved.combo_multiplier,
-        is_critical=resolved.is_critical,
-        stuns_opponent=resolved.stuns_opponent,
-        element_multiplier=resolved.element_multiplier,
+        damage=blow.final_damage,
+        strike=blow.strike,
+        combo_count=blow.combo_count,
+        combo_multiplier=blow.combo_multiplier,
+        is_critical=blow.is_critical,
+        stuns_opponent=blow.stuns_opponent,
+        element_multiplier=blow.element_multiplier,
     )
 
 

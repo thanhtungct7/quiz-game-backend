@@ -5,6 +5,11 @@ unit tests cannot: that the routes are wired up, that JWT auth works over a
 WebSocket handshake, that questions really come out of the question bank, and
 that results land in PostgreSQL.
 
+There are no rounds to step through. Each client holds its own deck and answers
+at its own pace, so a scenario drives one side as far as it likes without
+touching the other -- and the bot learns each answer from the reveal, so a
+question it got wrong is answered correctly when the deck brings it back.
+
 Usage:
     conda run -n backend uvicorn app.main:app --port 8000     # in one shell
     conda run -n backend python -m scripts.duo_smoke          # in another
@@ -37,22 +42,60 @@ class Client:
     user_id: str = ""
     socket: Any = None
     received: list[dict[str, Any]] = field(default_factory=list)
+    # Answer keys picked up from the reveals, so a question that comes back
+    # after a wrong answer is answered correctly the second time. Without this
+    # a deck could never be cleared and no scenario would ever reach the end.
+    known: dict[str, str] = field(default_factory=dict)
+    # Which question each open token belongs to: `answer.result` carries the
+    # token and the key, but not the question.
+    tokens: dict[str, str] = field(default_factory=dict)
 
     async def send(self, event: str, data: dict[str, Any] | None = None) -> None:
         await self.socket.send(json.dumps({"type": event, "data": data or {}}))
+
+    async def read_until(
+        self, *events: str, timeout_seconds: float = 20.0
+    ) -> tuple[str, dict[str, Any]]:
+        """Read until one of `events` arrives, learning as frames go past."""
+        while True:
+            raw = await asyncio.wait_for(self.socket.recv(), timeout=timeout_seconds)
+            message = json.loads(raw)
+            self.received.append(message)
+            kind, data = message["type"], message["data"]
+            if kind == "question.push":
+                self.tokens[data["token"]] = data["question"]["id"]
+            elif kind == "answer.result":
+                question_id = self.tokens.pop(data["token"], None)
+                correct = data.get("correct_option_ids") or []
+                if question_id and correct:
+                    self.known[question_id] = correct[0]
+            if kind == "error":
+                raise AssertionError(f"{self.name} got error: {data}")
+            if kind in events:
+                return kind, data
 
     async def expect(
         self, event: str, timeout_seconds: float = 20.0
     ) -> dict[str, Any]:
         """Read until `event` arrives, remembering everything seen on the way."""
-        while True:
-            raw = await asyncio.wait_for(self.socket.recv(), timeout=timeout_seconds)
-            message = json.loads(raw)
-            self.received.append(message)
-            if message["type"] == "error":
-                raise AssertionError(f"{self.name} got error: {message['data']}")
-            if message["type"] == event:
-                return message["data"]
+        _kind, data = await self.read_until(event, timeout_seconds=timeout_seconds)
+        return data
+
+    def pick(self, push: dict[str, Any]) -> str:
+        """The option to send: the learned answer if this question has come
+        round before, otherwise the first one and take the consequences."""
+        question = push["question"]
+        return self.known.get(question["id"]) or question["options"][0]["id"]
+
+    async def answer(
+        self, push: dict[str, Any], option_id: str | None = None
+    ) -> dict[str, Any]:
+        """Answer what is on screen and read back what it did."""
+        await self.send(
+            "answer.submit",
+            {"token": push["token"], "option_id": option_id or self.pick(push)},
+        )
+        return await self.expect("answer.result")
 
     def seen(self, event: str) -> list[dict[str, Any]]:
         return [m["data"] for m in self.received if m["type"] == event]
@@ -108,10 +151,38 @@ class Smoke:
         )
         await client.expect("connected")
 
+    # --- playing ----------------------------------------------------------
+
+    async def race(
+        self, *players: Client, limit: int = 60
+    ) -> dict[str, dict[str, Any]]:
+        """Answer whatever is on each player's screen until the match ends.
+
+        Every player is driven in turn, which is as close to two people playing
+        at once as one process gets. A match ends when someone clears their
+        deck or falls, so this always terminates well inside `limit`.
+        """
+        finished: dict[str, dict[str, Any]] = {}
+        for _ in range(limit):
+            for player in players:
+                if player.name in finished:
+                    continue
+                kind, data = await player.read_until("question.push", "match.finished")
+                if kind == "match.finished":
+                    finished[player.name] = data
+                    continue
+                await player.answer(data)
+            if len(finished) == len(players):
+                return finished
+        for player in players:
+            if player.name not in finished:
+                finished[player.name] = await player.expect("match.finished")
+        return finished
+
     # --- scenarios --------------------------------------------------------
 
     async def scenario_random_match(self, one: Client, two: Client) -> str:
-        print("\n[1] Random queue, full match, speed scoring")
+        print("\n[1] Random queue, a real race, speed scoring")
 
         await one.send("queue.join", {"question_count": 3, "time_per_question": 10})
         waiting = await one.expect("queue.waiting")
@@ -132,108 +203,117 @@ class Smoke:
             f"{found_one['opponent']['id']} / {found_two['opponent']['id']}",
         )
 
-        await one.expect("match.started")
+        started_one = await one.expect("match.started")
         await two.expect("match.started")
         match_id = found_one["match_id"]
-        hp_one = 100
-
-        for index in range(3):
-            round_one = await one.expect("round.start")
-            await two.expect("round.start")
-
-            if index == 0:
-                self.check(
-                    "the question comes from the real question bank",
-                    bool(round_one["question"]["question"])
-                    and len(round_one["question"]["options"]) >= 2,
-                )
-                self.check(
-                    "no option is flagged as the correct one",
-                    all("correct" not in o for o in round_one["question"]["options"]),
-                )
-
-            if index == 0:
-                self.check(
-                    "the round carries the combat state",
-                    round_one["your_hp"] == 100
-                    and round_one["opponent_hp"] == 100
-                    and round_one["your_mana"] == 0
-                    and round_one["your_combo"] == 0
-                    and round_one["you_are_stunned"] is False,
-                    f"hp={round_one['your_hp']} mana={round_one['your_mana']}",
-                )
-
-            options = round_one["question"]["options"]
-            # Player one answers immediately, player two dawdles.
-            await one.send(
-                "answer.submit",
-                {"round_index": index, "option_id": options[0]["id"]},
-            )
-            await asyncio.sleep(1.5)
-            await two.send(
-                "answer.submit",
-                {"round_index": index, "option_id": options[0]["id"]},
-            )
-
-            result_one = await one.expect("round.result")
-            result_two = await two.expect("round.result")
-
-            print(
-                f"    round {index}: "
-                f"one hp={result_one['your_hp']:3d} mana={result_one['your_mana']:3d} "
-                f"combo={result_one['your_combo']} dmg={result_one['your_blow']['damage']:2d} "
-                f"({result_one['your_blow']['strike']})  |  "
-                f"two hp={result_two['your_hp']:3d} mana={result_two['your_mana']:3d} "
-                f"combo={result_two['your_combo']} dmg={result_two['your_blow']['damage']:2d} "
-                f"({result_two['your_blow']['strike']})"
-            )
-            self.check(
-                f"round {index}: health drops by exactly the blow that landed",
-                result_one["your_hp"] == hp_one - result_one["opponent_blow"]["damage"],
-                f"{hp_one} -> {result_one['your_hp']} "
-                f"vs blow {result_one['opponent_blow']['damage']}",
-            )
-            self.check(
-                f"round {index}: both sides agree on the health totals",
-                result_one["your_hp"] == result_two["opponent_hp"]
-                and result_one["opponent_hp"] == result_two["your_hp"],
-            )
-            hp_one = result_one["your_hp"]
-            if result_one["you"]["correct"]:
-                self.check(
-                    f"round {index}: a correct answer deals damage",
-                    result_one["your_blow"]["damage"] > 0,
-                )
-            else:
-                self.check(
-                    f"round {index}: a wrong answer deals nothing",
-                    result_one["your_blow"]["damage"] == 0,
-                )
-
-            if index == 0:
-                self.check(
-                    "the round result finally reveals the answer",
-                    len(result_one["correct_option_ids"]) >= 1,
-                )
-                self.check(
-                    "server-side timing is recorded, not client-claimed",
-                    result_one["you"]["elapsed_ms"] is not None
-                    and result_one["you"]["elapsed_ms"] >= 0,
-                )
-                if result_one["you"]["correct"] and result_one["opponent"]["correct"]:
-                    self.check(
-                        "answering faster scores more for the same answer",
-                        result_one["you"]["points"] > result_one["opponent"]["points"],
-                        f"{result_one['you']['points']} vs "
-                        f"{result_one['opponent']['points']}",
-                    )
-
-        finished_one = await one.expect("match.finished")
-        finished_two = await two.expect("match.finished")
 
         self.check(
-            "both players are told the match completed",
-            finished_one["end_reason"] == "COMPLETED",
+            "the match opens with a full deck, full health and a clock to beat",
+            started_one["deck_size"] == 3
+            and started_one["your_hp"] == started_one["your_max_hp"]
+            and started_one["deadline_at"] > started_one["server_time_ms"],
+            str(started_one)[:180],
+        )
+
+        push_one = await one.expect("question.push")
+        push_two = await two.expect("question.push")
+        self.check(
+            "the question comes from the real question bank",
+            bool(push_one["question"]["question"])
+            and len(push_one["question"]["options"]) >= 2,
+        )
+        self.check(
+            "no option is flagged as the correct one",
+            all("correct" not in o for o in push_one["question"]["options"]),
+        )
+        self.check(
+            "both players open on the same question in the same order",
+            push_one["question"]["id"] == push_two["question"]["id"],
+        )
+        self.check(
+            "the deck opens owing every question",
+            push_one["deck_remaining"] == 3,
+            str(push_one["deck_remaining"]),
+        )
+
+        # One answers at once, two dawdles -- and nothing waits for two.
+        result_one = await one.answer(push_one)
+        landed = await two.expect("opponent.answered")
+        blow = result_one["blow"] or {}
+        self.check(
+            "the answer is graded and revealed on the spot",
+            bool(result_one["correct_option_ids"]) and result_one["elapsed_ms"] >= 0,
+            str(result_one)[:180],
+        )
+        self.check(
+            "the blow reaches the other side the instant it is given",
+            landed["damage"] == blow.get("damage", 0),
+            f"{landed['damage']} vs {blow.get('damage')}",
+        )
+        if result_one["correct"]:
+            self.check("a correct answer deals damage", blow.get("damage", 0) > 0)
+            self.check(
+                "and takes it off the opponent's bar at once",
+                result_one["opponent_hp"] < started_one["opponent_hp"],
+                f"{result_one['opponent_hp']} from {started_one['opponent_hp']}",
+            )
+        else:
+            self.check("a wrong answer lands nothing", result_one["blow"] is None)
+            self.check(
+                "and puts the question back rather than dropping it",
+                result_one["your_deck_remaining"] == 3,
+                str(result_one["your_deck_remaining"]),
+            )
+
+        # The fast player is already on their next question while the slow one
+        # has not touched their first. This is the whole change from lock step.
+        second_one = await one.expect("question.push")
+        self.check(
+            "the faster player moves on without the other",
+            second_one["token"] != push_one["token"] and not two.seen("answer.result"),
+            str(len(two.seen("answer.result"))),
+        )
+
+        await asyncio.sleep(1.5)
+        result_two = await two.answer(push_two, option_id=one.pick(push_one))
+        if result_one["correct"] and result_two["correct"]:
+            self.check(
+                "answering faster scores more for the same answer",
+                result_one["points"] > result_two["points"],
+                f"{result_one['points']} vs {result_two['points']}",
+            )
+
+        await one.answer(second_one)
+        results = await self.race(one, two)
+        finished_one, finished_two = results[one.name], results[two.name]
+
+        print(
+            f"    end_reason={finished_one['end_reason']} "
+            f"hp {finished_one['your_hp_left']} / {finished_two['your_hp_left']} "
+            f"cleared {finished_one['your_deck_cleared']} / "
+            f"{finished_two['your_deck_cleared']}"
+        )
+        self.check(
+            "a three-question deck ends by being cleared, not by a knockout",
+            finished_one["end_reason"] == "DECK_CLEARED",
+            str(finished_one["end_reason"]),
+        )
+        self.check(
+            "exactly one player cleared their deck",
+            finished_one["your_deck_cleared"] != finished_two["your_deck_cleared"],
+            f"{finished_one['your_deck_cleared']} / "
+            f"{finished_two['your_deck_cleared']}",
+        )
+        self.check(
+            "the player who cleared it is the winner",
+            (finished_one["result"] == "WIN") == finished_one["your_deck_cleared"],
+            f"{finished_one['result']} / cleared={finished_one['your_deck_cleared']}",
+        )
+        self.check(
+            "clearing the deck means every question was answered correctly",
+            finished_one["your_correct"] >= 3
+            or finished_two["your_correct"] >= 3,
+            f"{finished_one['your_correct']} / {finished_two['your_correct']}",
         )
         self.check(
             "the two players get opposite verdicts",
@@ -253,11 +333,6 @@ class Smoke:
             f"{finished_one['rating']['delta']} / {finished_two['rating']['delta']}",
         )
         self.check(
-            "the final health matches the last round reported",
-            finished_one["your_hp_left"] == hp_one,
-            f"{finished_one['your_hp_left']} vs {hp_one}",
-        )
-        self.check(
             "health agrees from both sides",
             finished_one["your_hp_left"] == finished_two["opponent_hp_left"],
         )
@@ -271,7 +346,7 @@ class Smoke:
                 f"hp_left={finished['your_hp_left']}"
             )
         self.check(
-            "the winner is paid experience and gold",
+            "both players are paid experience and gold",
             all(
                 finished[field]["delta"] > 0
                 for finished in (finished_one, finished_two)
@@ -369,20 +444,46 @@ class Smoke:
                     f"{refused.status_code} {refused.text[:120]}",
                 )
 
-    async def scenario_skills(self, one: Client, two: Client) -> None:
-        """Casting a skill mid-match, and the rules around it."""
+    async def scenario_skills(self) -> None:
+        """Casting a skill mid-match, and the rules around it.
+
+        Plays on a pair of freshly registered accounts rather than the pair the
+        scenarios above have been using. A match costs one energy out of five
+        and energy only trickles back (one point per thirty minutes), so by this
+        point the shared pair has spent every point it had on the five matches
+        before this one -- and the whole scenario used to die on
+        NOT_ENOUGH_ENERGY before casting anything.
+        """
         print("\n[10] Skills in a live match")
+        async with httpx.AsyncClient(timeout=20) as http:
+            one = await self.register(http, "skill-one")
+            two = await self.register(http, "skill-two")
+            # The mage opens on 30 mana, the most of the three classes. Without
+            # a class at all a player opens on nothing, and this bot answers
+            # blindly -- a wrong answer pays 5 mana -- so six rounds could never
+            # reach the 40-50 a starter costs and nothing would ever be cast.
+            await http.post(
+                f"{self.api}/game/class",
+                headers={"Authorization": f"Bearer {one.token}"},
+                json={"class_code": "MAGE"},
+            )
+        await self.connect(one)
+        await self.connect(two)
+        try:
+            await self._play_skill_match(one, two)
+        finally:
+            await one.socket.close()
+            await two.socket.close()
+
+    async def _play_skill_match(self, one: Client, two: Client) -> None:
         settings = {"question_count": 6, "time_per_question": 10}
         await one.send("queue.join", settings)
         await one.expect("queue.waiting")
         await two.send("queue.join", settings)
         await one.expect("match.found")
         await two.expect("match.found")
-        await one.expect("match.started")
+        started = await one.expect("match.started")
         await two.expect("match.started")
-
-        round_one = await one.expect("round.start")
-        await two.expect("round.start")
 
         async with httpx.AsyncClient(timeout=15) as http:
             loadout = await http.get(
@@ -393,20 +494,12 @@ class Smoke:
         self.check("the player brought skills into the match", bool(slots), loadout.text[:120])
         if not slots:
             return
+        # The cheapest one, so the cast happens as early in the match as the
+        # mana curve allows rather than depending on slot order.
+        slots = sorted(slots, key=lambda slot: slot["mana_cost"])
+        skill = slots[0]
 
-        # No mana at round one, so the first cast has to be refused.
-        await one.send(
-            "skill.use",
-            {"skill_code": slots[0]["code"], "round_index": round_one["round_index"]},
-        )
-        refusal = await self._expect_error(one)
-        self.check(
-            "casting without mana is refused",
-            refusal == "NOT_ENOUGH_MANA",
-            str(refusal),
-        )
-
-        await one.send("skill.use", {"skill_code": "NOT_A_SKILL", "round_index": 0})
+        await one.send("skill.use", {"skill_code": "NOT_A_SKILL"})
         unknown = await self._expect_error(one)
         self.check(
             "casting a skill you have not equipped is refused",
@@ -414,25 +507,26 @@ class Smoke:
             str(unknown),
         )
 
+        if started["your_mana"] < skill["mana_cost"]:
+            await one.send("skill.use", {"skill_code": skill["code"]})
+            refusal = await self._expect_error(one)
+            self.check(
+                "casting without the mana is refused",
+                refusal == "NOT_ENOUGH_MANA",
+                str(refusal),
+            )
+
         # Play on until there is mana to spend, then cast for real.
+        mana = started["your_mana"]
         cast = False
-        for index in range(round_one["round_index"], 6):
-            if index > round_one["round_index"]:
-                current = await one.expect("round.start")
-                await two.expect("round.start")
-            else:
-                current = round_one
-            option_id = current["question"]["options"][0]["id"]
-            if not cast and current["your_mana"] >= slots[0]["mana_cost"]:
-                await one.send(
-                    "skill.use",
-                    {"skill_code": slots[0]["code"], "round_index": index},
-                )
+        for _ in range(12):
+            if mana >= skill["mana_cost"]:
+                await one.send("skill.use", {"skill_code": skill["code"]})
                 used_one = await one.expect("skill.used")
                 used_two = await two.expect("skill.used")
                 self.check(
                     "both players are told a skill was cast",
-                    used_one["skill_code"] == used_two["skill_code"] == slots[0]["code"],
+                    used_one["skill_code"] == used_two["skill_code"] == skill["code"],
                 )
                 self.check(
                     "only the caster sees the private part",
@@ -440,27 +534,30 @@ class Smoke:
                     str(used_two["private"]),
                 )
                 self.check(
-                    "casting spends mana",
-                    used_one["your_mana"] == current["your_mana"] - slots[0]["mana_cost"],
-                    f"{used_one['your_mana']} from {current['your_mana']}",
+                    "only the caster is told when it recharges",
+                    used_one["ready_again_at"] > 0 and used_two["ready_again_at"] == 0,
+                    f"{used_one['ready_again_at']} / {used_two['ready_again_at']}",
                 )
-                await one.send("skill.use", {"skill_code": slots[0]["code"], "round_index": index})
+                self.check(
+                    "casting spends mana",
+                    used_one["your_mana"] == mana - skill["mana_cost"],
+                    f"{used_one['your_mana']} from {mana}",
+                )
+                await one.send("skill.use", {"skill_code": skill["code"]})
                 twice = await self._expect_error(one)
                 self.check(
-                    "the same skill cannot be cast twice in one round",
-                    twice == "SKILL_ALREADY_USED_THIS_ROUND",
+                    "a skill cannot be recast before it recharges",
+                    twice == "SKILL_ON_COOLDOWN",
                     str(twice),
                 )
                 cast = True
-
-            for player in (one, two):
-                await player.send(
-                    "answer.submit", {"round_index": index, "option_id": option_id}
-                )
-            await one.expect("round.result")
-            await two.expect("round.result")
-            if cast:
                 break
+
+            kind, data = await one.read_until("question.push", "match.finished")
+            if kind == "match.finished":
+                break
+            result = await one.answer(data)
+            mana = result["your_mana"]
 
         self.check("a skill was cast during the match", cast)
 
@@ -486,8 +583,11 @@ class Smoke:
             str(body.get("skill_uses"))[:160],
         )
         self.check(
-            "the match detail carries the combat columns",
-            all("my_damage" in entry and "my_hp_after" in entry for entry in body["rounds"]),
+            "the match detail carries the health both sides finished on",
+            detail.status_code == 200
+            and "my_hp_left" in body
+            and "opponent_hp_left" in body,
+            str(body)[:160],
         )
 
     async def scenario_retention(self, one: Client, two: Client) -> None:
@@ -618,8 +718,11 @@ class Smoke:
             try:
                 await one.expect("match.found", timeout_seconds=10)
                 await two.expect("match.found", timeout_seconds=10)
-                await one.expect("match.finished", timeout_seconds=60)
-                await two.expect("match.finished", timeout_seconds=60)
+                await one.expect("match.started", timeout_seconds=10)
+                await two.expect("match.started", timeout_seconds=10)
+                # Nothing ends a match on its own any more short of the clock,
+                # so the deck has to be played out rather than waited out.
+                await self.race(one, two)
             except (AssertionError, TimeoutError):
                 break
 
@@ -649,10 +752,10 @@ class Smoke:
                 return str(message["data"]["code"])
 
     async def scenario_combat(self, one: Client, two: Client) -> None:
-        """A long match, to exercise combos and reach a knockout if it lands."""
+        """A long deck, driven from one side, to reach a knockout."""
         print("\n[8] Combat: combos, damage and knockout")
-        rounds = 12
-        settings = {"question_count": rounds, "time_per_question": 10}
+        deck = 12
+        settings = {"question_count": deck, "time_per_question": 10}
         await one.send("queue.join", settings)
         await one.expect("queue.waiting")
         await two.send("queue.join", settings)
@@ -661,65 +764,57 @@ class Smoke:
         await one.expect("match.started")
         await two.expect("match.started")
 
-        played = 0
+        # Only `one` answers. Twelve questions is far more than the health bar
+        # can absorb, so a player left alone with the deck wins by knockout
+        # long before they could clear it.
+        answered = 0
         best_combo = 0
-        for index in range(rounds):
-            try:
-                round_one = await one.expect("round.start")
-            except (AssertionError, TimeoutError):
+        finished_one: dict[str, Any] | None = None
+        for _ in range(deck * 2):
+            kind, data = await one.read_until("question.push", "match.finished")
+            if kind == "match.finished":
+                finished_one = data
                 break
-            await two.expect("round.start")
-
-            # Both answer the same option so combos build on whoever is right.
-            option_id = round_one["question"]["options"][0]["id"]
-            for player in (one, two):
-                await player.send(
-                    "answer.submit", {"round_index": index, "option_id": option_id}
-                )
-            result_one = await one.expect("round.result")
-            await two.expect("round.result")
-            played += 1
-            best_combo = max(best_combo, result_one["your_combo"])
-
-            if result_one["your_blow"]["combo_count"] >= 3:
+            result = await one.answer(data)
+            answered += 1
+            best_combo = max(best_combo, result["your_combo"])
+            blow = result["blow"]
+            if blow and blow["combo_count"] >= 3:
                 self.check(
                     "a combo of three or more multiplies the damage",
-                    result_one["your_blow"]["combo_multiplier"] > 1.0,
-                    str(result_one["your_blow"]),
+                    blow["combo_multiplier"] > 1.0,
+                    str(blow),
                 )
-            if result_one["opponent_hp"] == 0 or result_one["your_hp"] == 0:
-                break
-
-        finished_one = await one.expect("match.finished")
+        if finished_one is None:
+            finished_one = await one.expect("match.finished")
         finished_two = await two.expect("match.finished")
+
         print(
-            f"    played {played}/{rounds} rounds, best combo {best_combo}, "
+            f"    answered {answered}, best combo {best_combo}, "
             f"end_reason={finished_one['end_reason']}, "
             f"hp {finished_one['your_hp_left']} / {finished_two['your_hp_left']}"
         )
 
-        if finished_one["end_reason"] == "KNOCKOUT":
-            self.check(
-                "a knockout leaves the loser on zero health",
-                0 in (finished_one["your_hp_left"], finished_two["your_hp_left"]),
-                f"{finished_one['your_hp_left']} / {finished_two['your_hp_left']}",
-            )
-            self.check(
-                "a knockout stops the match before its last question",
-                played < rounds,
-                f"played {played} of {rounds}",
-            )
-            self.check(
-                "the player left standing wins the knockout",
-                (finished_one["result"] == "WIN")
-                == (finished_one["your_hp_left"] > finished_two["your_hp_left"]),
-            )
-        else:
-            self.check(
-                "a match that goes the distance leaves both players alive",
-                finished_one["your_hp_left"] > 0 and finished_two["your_hp_left"] > 0,
-                f"{finished_one['your_hp_left']} / {finished_two['your_hp_left']}",
-            )
+        self.check(
+            "an opponent who never answers is knocked out",
+            finished_one["end_reason"] == "KNOCKOUT",
+            str(finished_one["end_reason"]),
+        )
+        self.check(
+            "a knockout leaves the loser on zero health",
+            finished_two["your_hp_left"] == 0 and finished_one["your_hp_left"] > 0,
+            f"{finished_one['your_hp_left']} / {finished_two['your_hp_left']}",
+        )
+        self.check(
+            "the player left standing wins the knockout",
+            finished_one["result"] == "WIN" and finished_two["result"] == "LOSE",
+            f"{finished_one['result']} / {finished_two['result']}",
+        )
+        self.check(
+            "a knockout stops the match before the deck runs out",
+            answered < deck and not finished_one["your_deck_cleared"],
+            f"answered {answered} of {deck}",
+        )
 
     async def scenario_not_host(self, one: Client, two: Client) -> None:
         """`match.start` from the guest must be refused."""
@@ -739,6 +834,7 @@ class Smoke:
         self.check("the host can start it", True)
 
         await one.send("match.leave")
+        await one.expect("match.finished")
         await two.expect("match.finished")
 
     async def scenario_reconnect(self, one: Client, two: Client) -> None:
@@ -752,12 +848,13 @@ class Smoke:
         await two.expect("match.found")
         await one.expect("match.started")
         await two.expect("match.started")
-        first_round = await one.expect("round.start")
-        await two.expect("round.start")
+        first = await one.expect("question.push")
+        await two.expect("question.push")
 
-        option_id = first_round["question"]["options"][0]["id"]
-        await one.send("answer.submit", {"round_index": 0, "option_id": option_id})
-        await asyncio.sleep(0.5)
+        # Answer one, then drop while the next is on screen: a resume has to
+        # hand back both the score already earned and the open question.
+        await one.answer(first)
+        second = await one.expect("question.push")
 
         await one.socket.close()
         await two.expect("opponent.disconnected")
@@ -765,30 +862,34 @@ class Smoke:
         await self.connect(one)
         resume = await one.expect("match.resume")
         self.check(
-            "the reconnected player is put back on the right round",
-            resume["round_index"] == 0 and resume["total_rounds"] == 5,
-            str(resume)[:160],
+            "the reconnected player is put back on their own deck",
+            resume["deck_size"] == 5 and resume["your_deck_remaining"] in (4, 5),
+            str(resume)[:180],
         )
         self.check(
-            "their already-submitted answer is remembered",
-            resume["already_answered"] is True,
+            "the question they were looking at comes back with its token",
+            resume["token"] == second["token"]
+            and resume["question"]["id"] == second["question"]["id"],
+            f"{resume['token']} vs {second['token']}",
         )
         self.check(
-            "the round clock is still running for them",
-            resume["seconds_remaining"] is not None and resume["seconds_remaining"] > 0,
-            str(resume["seconds_remaining"]),
+            "the match clock is still running for them",
+            resume["deadline_at"] > resume["server_time_ms"],
+            f"{resume['deadline_at']} vs {resume['server_time_ms']}",
         )
         await two.expect("opponent.reconnected")
         self.check("the opponent is told they came back", True)
 
-        await two.send("answer.submit", {"round_index": 0, "option_id": option_id})
-        result = await one.expect("round.result")
+        # And the resumed token still answers.
+        result = await one.answer(resume)
         self.check(
-            "the reconnected player keeps receiving round results",
-            result["round_index"] == 0,
+            "the token handed back by the resume still answers the question",
+            result["token"] == resume["token"],
+            f"{result['token']} vs {resume['token']}",
         )
 
         await one.send("match.leave")
+        await one.expect("match.finished")
         await two.expect("match.finished")
 
     async def scenario_abandon(self, one: Client, two: Client) -> None:
@@ -801,8 +902,8 @@ class Smoke:
         await two.expect("match.found")
         await one.expect("match.started")
         await two.expect("match.started")
-        await one.expect("round.start")
-        await two.expect("round.start")
+        await one.expect("question.push")
+        await two.expect("question.push")
 
         await one.socket.close()
         warning = await two.expect("opponent.disconnected")
@@ -849,14 +950,16 @@ class Smoke:
         )
         body = detail.json()
         self.check(
-            "match detail lists every round that was played",
-            detail.status_code == 200 and len(body["rounds"]) == 3,
-            str(body)[:160] if detail.status_code != 200 else f"{len(body['rounds'])} rounds",
+            "match detail reports the health both sides finished on",
+            detail.status_code == 200
+            and body["my_hp_left"] >= 0
+            and body["opponent_hp_left"] >= 0,
+            str(body)[:160],
         )
         self.check(
-            "each round remembers both players' answers",
-            detail.status_code == 200
-            and all(r["question"] for r in body["rounds"]),
+            "match detail agrees with the summary it extends",
+            detail.status_code == 200 and body["match_id"] == match_id,
+            str(body)[:160],
         )
         counters = stats.json()
         self.check(
@@ -895,7 +998,7 @@ class Smoke:
             raw[:120],
         )
 
-        await one.send("answer.submit", {"round_index": 0, "option_id": "nope"})
+        await one.send("answer.submit", {"token": "not-a-token", "option_id": "nope"})
         raw = await asyncio.wait_for(one.socket.recv(), timeout=10)
         self.check(
             "answering outside a match is rejected",
@@ -906,7 +1009,7 @@ class Smoke:
         await one.send("room.create", {"time_per_question": 99999})
         raw = await asyncio.wait_for(one.socket.recv(), timeout=10)
         self.check(
-            "an absurd round timer is refused by the server",
+            "an absurd speed reference is refused by the server",
             json.loads(raw)["data"]["code"] == "INVALID_PAYLOAD",
             raw[:120],
         )
@@ -968,7 +1071,7 @@ class Smoke:
         await self.scenario_bad_token()
         await self.scenario_combat(one, two)
         await self.scenario_game_layer(one)
-        await self.scenario_skills(one, two)
+        await self.scenario_skills()
         await self.scenario_retention(one, two)
 
         await one.socket.close()

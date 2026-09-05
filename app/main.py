@@ -18,12 +18,19 @@ from app.db.session import AsyncSessionFactory, engine
 from app.repository.auth.user_repository import UserRepository
 from app.repository.game.catalog_repository import CatalogRepository
 from app.repository.game.item_repository import ItemRepository
+from app.repository.game.monster_repository import MonsterRepository
 from app.repository.game.season_repository import SeasonRepository
 from app.services.content.admin_bootstrap_service import AdminSeedService, seed_first_admin
 from app.services.duo.housekeeping import abandon_orphaned_matches, run_housekeeping
 from app.services.duo.match_runtime import engine as duo_engine
-from app.services.game.catalog import seed_game_catalog, seed_item_catalog
+from app.services.game.catalog import (
+    seed_game_catalog,
+    seed_item_catalog,
+    seed_monster_catalog,
+)
 from app.services.game.season_service import ensure_active_season
+from app.services.pve.battle_runtime import engine as battle_engine
+from app.services.pve.housekeeping import abandon_orphaned_battles
 
 configure_logging(settings.debug)
 logger = logging.getLogger(__name__)
@@ -39,6 +46,9 @@ async def lifespan(_: FastAPI) -> AsyncIterator[None]:
         # until the question bank has been imported.
         await seed_game_catalog(CatalogRepository(db))
         await seed_item_catalog(ItemRepository(db))
+        # Monsters are mapped onto lessons by position, so seeding the
+        # catalog is all it takes for every gate on the path to be guarded.
+        await seed_monster_catalog(MonsterRepository(db))
         await ensure_active_season(SeasonRepository(db))
 
     # Duo match state lives in this process, so anything left IN_PROGRESS
@@ -49,6 +59,13 @@ async def lifespan(_: FastAPI) -> AsyncIterator[None]:
             "Closed duo matches orphaned by a previous run and refunded %d player(s)",
             stranded,
         )
+    # Same story for lesson battles, minus the refund: a battle charges
+    # nothing, so an orphaned one only needs closing.
+    orphaned_battles = await abandon_orphaned_battles()
+    if orphaned_battles:
+        logger.info(
+            "Closed %d lesson battle(s) orphaned by a previous run", orphaned_battles
+        )
     housekeeping = asyncio.create_task(run_housekeeping())
 
     yield
@@ -57,6 +74,7 @@ async def lifespan(_: FastAPI) -> AsyncIterator[None]:
     with contextlib.suppress(asyncio.CancelledError):
         await housekeeping
     await duo_engine.shutdown()
+    await battle_engine.shutdown()
     await close_avatar_storage()
     await engine.dispose()
     logger.info("Application stopped")

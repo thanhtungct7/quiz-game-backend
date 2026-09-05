@@ -7,7 +7,7 @@ caller, never taken from the client.
 from dataclasses import dataclass
 from enum import StrEnum
 
-from app.services.duo.combat import MAX_HP
+from app.services.game.combat import MAX_HP
 
 MAX_POINTS = 1000
 BASE_SHARE = 0.5
@@ -29,6 +29,9 @@ class PlayerTotals:
     # Defaults to full health so a match played without combat decides on
     # score exactly as it always did.
     hp_left: int = MAX_HP
+    # True for a player who got every question in their deck right. Only one
+    # of the two can hold it: the match stops the moment either does.
+    deck_cleared: bool = False
 
 
 def award_points(is_correct: bool, elapsed_ms: int, time_limit_seconds: int) -> int:
@@ -52,15 +55,20 @@ def award_points(is_correct: bool, elapsed_ms: int, time_limit_seconds: int) -> 
 def decide_outcome(one: PlayerTotals, two: PlayerTotals) -> MatchOutcome:
     """Outcome from player one's point of view.
 
-    Health decides first: whoever has more of it left has won the fight, and a
+    Clearing the deck decides first, and it beats a healthier opponent on
+    purpose: answering every question correctly is the thing the match is
+    actually about, and a player who does it has finished the race whatever
+    state their health is in.
+
+    Health comes next: whoever has more of it left has won the fight, and a
     player on zero has lost outright. Points still accumulate exactly as they
-    did and still decide everything below that -- they just no longer come
-    first. Two players who knocked each other out in the same round are level
-    on health and fall through to the point tiebreaks like anyone else.
+    did and still decide everything below that.
 
     Remaining tiebreaks in order: total score, then number of correct answers,
-    then the lower cumulative answer time. Equal on all four is a genuine draw.
+    then the lower cumulative answer time. Equal on all five is a genuine draw.
     """
+    if one.deck_cleared != two.deck_cleared:
+        return MatchOutcome.WIN if one.deck_cleared else MatchOutcome.LOSE
     if one.hp_left != two.hp_left:
         return MatchOutcome.WIN if one.hp_left > two.hp_left else MatchOutcome.LOSE
     if one.score != two.score:

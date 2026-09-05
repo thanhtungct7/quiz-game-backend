@@ -3,22 +3,29 @@
 Only finished results reach PostgreSQL; everything here lives in the process
 and is deliberately cheap to mutate. See `registry` for the lock that guards
 the collections these objects are stored in.
+
+There are no rounds. Each player holds a deck of question indices and works
+through it at their own pace: a question is pushed, answered, and the next one
+follows after a short lockout, while the opponent is doing the same thing on a
+clock of their own. Everything here is timed in monotonic seconds from
+`clock.seconds()`.
 """
 
 import asyncio
 import time
+from collections import deque
 from dataclasses import dataclass, field
 from datetime import datetime
 
 from fastapi import WebSocket
 
 from app.models.content.challenge import ChallengeDifficulty
-from app.models.duo.duo_match import DuoMatchMode, DuoMatchStatus
+from app.models.duo.duo_match import DuoMatchEndReason, DuoMatchMode, DuoMatchStatus
 from app.schemas.content.course_content import ChallengePublicRead
 from app.schemas.duo.duo import DuoSettingsRead
 from app.schemas.game.player_card import PlayerCardRead
-from app.services.duo.combat import MAX_HP, Blow
-from app.services.duo.loadout import (
+from app.services.game.combat import MAX_HP
+from app.services.game.loadout import (
     ActiveEffect,
     EffectState,
     PlayerLoadout,
@@ -33,6 +40,9 @@ class MatchSettings:
     """Frozen so queue entries can be compared for compatibility by value."""
 
     question_count: int
+    # No longer a deadline. Nothing cuts a player off mid-question any more:
+    # this is the speed reference a correct answer is scored against, and it
+    # is what `award_points` and `resolve_blow` are handed.
     time_per_question: int
     topic_ids: tuple[str, ...] = ()
     difficulty: ChallengeDifficulty | None = None
@@ -68,27 +78,44 @@ class PlayerConn:
     connected: bool = True
     score: int = 0
     correct_count: int = 0
+    answers_given: int = 0
     total_elapsed_ms: int = 0
     hp: int = MAX_HP
     mana: int = 0
     combo: int = 0
     best_combo: int = 0
-    # The exact round index this player has to sit out, or None. An exact index
-    # rather than a countdown because the stun is granted while settling round
-    # N and applies to round N+1, and a countdown would be ambiguous about
-    # which of the two it meant.
-    stunned_round_index: int | None = None
-    # This player's own deadline for the current round, which can be shorter
-    # than the round's once skills can shorten it.
-    effective_limit_ms: int = 0
+
+    # --- this player's own deck --------------------------------------------
+    # Indices into `LiveMatch.questions`, seeded in order. A question leaves
+    # the deck only when it is answered correctly; a wrong answer sends it to
+    # the back, which is what makes the deck something to be worked through
+    # rather than a list to be survived.
+    deck: deque[int] = field(default_factory=deque)
+    # A token rather than an index: a wrong answer puts the same question back
+    # in the deck, so the same index can legitimately come round twice and an
+    # index would no longer identify which showing an answer belongs to.
+    question_token: str | None = None
+    question_pushed_at: float | None = None
+    current_index: int | None = None
+    # Indices this player has already been shown once. Only so a repeat can be
+    # announced as one -- a question coming round again with no explanation
+    # reads as a bug.
+    seen: set[int] = field(default_factory=set)
+    # While either of these is in the future no question is on screen: the
+    # player is reading the last result, or sitting out a stun. The opponent's
+    # clock does not care.
+    lockout_until: float = 0.0
+    stunned_until: float = 0.0
+    # Latched by the match loop the moment an empty deck has nothing left to
+    # push. Ends the match.
+    deck_cleared: bool = False
+
     # Resolved once when the match starts and read-only from then on.
     loadout: PlayerLoadout | None = None
     effects: EffectState = field(default_factory=EffectState)
-    skills_used_this_round: set[str] = field(default_factory=set)
+    # When each cast skill may be cast again, on the engine's monotonic clock.
+    skill_ready_at: dict[str, float] = field(default_factory=dict)
     grace_task: asyncio.Task[None] | None = None
-
-    def is_stunned_for(self, round_index: int) -> bool:
-        return self.stunned_round_index == round_index
 
     @property
     def build(self) -> PlayerLoadout:
@@ -104,6 +131,29 @@ class PlayerConn:
     def rating(self) -> int:
         return self.standing.rating
 
+    @property
+    def is_down(self) -> bool:
+        return self.hp <= 0
+
+    @property
+    def deck_remaining(self) -> int:
+        """How many questions this player still has to get right, the one on
+        screen included -- which is the number worth showing an opponent."""
+        return len(self.deck) + (1 if self.question_token is not None else 0)
+
+    def is_stunned(self, now: float) -> bool:
+        return now < self.stunned_until
+
+    def ready_at(self) -> float:
+        """The earliest this player may be handed another question."""
+        return max(self.lockout_until, self.stunned_until)
+
+    def elapsed_ms(self, now: float) -> int:
+        """Milliseconds since the current question was pushed."""
+        if self.question_pushed_at is None:
+            return 0
+        return int((now - self.question_pushed_at) * 1000)
+
     def to_read(self) -> PlayerCardRead:
         return build_player_card(
             user_id=self.user_id,
@@ -115,19 +165,21 @@ class PlayerConn:
 
 @dataclass
 class SubmittedAnswer:
+    """One answer, as it was resolved.
+
+    `is_correct` is decided by the engine from the key loaded when the match
+    started -- a tick cannot wait on a query -- and the reveal fields ride
+    along so the result frame needs no second lookup.
+    """
+
+    question_index: int
+    question_id: str
     option_id: str
     elapsed_ms: int
     is_correct: bool
     points: int
-
-
-@dataclass
-class RoundRecord:
-    round_index: int
-    challenge_id: str
-    answers: dict[str, SubmittedAnswer]
-    blows: dict[str, Blow] = field(default_factory=dict)
-    hp_after: dict[str, int] = field(default_factory=dict)
+    correct_option_ids: list[str] = field(default_factory=list)
+    explanation: str | None = None
 
 
 @dataclass
@@ -143,22 +195,21 @@ class LiveMatch:
     answer_key: dict[str, list[str]] = field(default_factory=dict)
     explanations: dict[str, str | None] = field(default_factory=dict)
     status: DuoMatchStatus = DuoMatchStatus.WAITING
-    round_index: int = -1
-    round_started_at: float | None = None
-    round_answers: dict[str, SubmittedAnswer] = field(default_factory=dict)
-    round_closed: asyncio.Event = field(default_factory=asyncio.Event)
-    rounds_log: list[RoundRecord] = field(default_factory=list)
     task: asyncio.Task[None] | None = None
     created_at: float = field(default_factory=time.monotonic)
+    # Monotonic instants, set when the first question goes out.
+    started_at: float = 0.0
+    deadline_at: float = 0.0
+    last_snapshot_at: float = 0.0
     finished_at: float | None = None
     started_wall: datetime | None = None
     persisted: bool = False
-    # Set once a blow drops someone to zero. The round it happens in still
-    # plays out and still reports its result; the match loop stops afterwards.
-    ko_pending: bool = False
+    # Set by the tick that noticed the match is over, so `_finish` reports the
+    # same reason the loop stopped for.
+    end_reason: DuoMatchEndReason | None = None
     # True once the start charged the players. Cleared when it is handed back.
     energy_spent: bool = False
-    # Buffered in memory and flushed with the match, so a live round never
+    # Buffered in memory and flushed with the match, so a live answer never
     # waits on a database round trip.
     skill_log: list[SkillUseRecord] = field(default_factory=list)
 
@@ -170,6 +221,10 @@ class LiveMatch:
     def is_full(self) -> bool:
         return len(self.players) >= 2
 
+    @property
+    def deck_size(self) -> int:
+        return len(self.questions)
+
     def opponent_of(self, user_id: str) -> PlayerConn | None:
         for player_id, player in self.players.items():
             if player_id != user_id:
@@ -179,11 +234,10 @@ class LiveMatch:
     def connected_players(self) -> list[PlayerConn]:
         return [player for player in self.players.values() if player.connected]
 
-    def elapsed_ms(self) -> int:
-        """Milliseconds since the current round was broadcast."""
-        if self.round_started_at is None:
+    def duration_seconds(self, now: float) -> int:
+        if self.started_at <= 0:
             return 0
-        return int((time.monotonic() - self.round_started_at) * 1000)
+        return int(now - self.started_at)
 
 
 @dataclass

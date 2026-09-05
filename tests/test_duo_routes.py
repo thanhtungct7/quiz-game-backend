@@ -186,10 +186,9 @@ async def test_get_match_maps_a_stranger_to_403() -> None:
 
 
 @pytest.mark.asyncio
-async def test_get_match_returns_detail_with_rounds() -> None:
+async def test_get_match_returns_the_detail() -> None:
     detail = DuoMatchDetail(
         **_summary().model_dump(),
-        rounds=[],
         my_hp_left=40,
         opponent_hp_left=0,
         skill_uses=[],
@@ -203,7 +202,7 @@ async def test_get_match_returns_detail_with_rounds() -> None:
     )
 
     assert result.match_id == "match-1"
-    assert result.rounds == []
+    assert result.my_hp_left == 40
 
 
 @pytest.mark.asyncio

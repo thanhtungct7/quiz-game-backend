@@ -368,6 +368,12 @@ async def test_profile_reports_level_and_progress_toward_the_next() -> None:
     assert body["class_code"] is None
 
 
+#: Granted free on first contact with the game layer, so they are owned in every
+#: test that touches a `/game` endpoint -- including the ones asserting that a
+#: refused unlock granted nothing.
+STARTER_IDS = {"skill-STRIKE_X2", "skill-SHIELD"}
+
+
 async def test_a_player_who_never_played_gets_a_profile_and_the_starters() -> None:
     harness = Harness()
 
@@ -377,8 +383,8 @@ async def test_a_player_who_never_played_gets_a_profile_and_the_starters() -> No
     assert response.json()["level"] == 1
     # The starter skills are granted and equipped on first contact, so nobody
     # ever walks into a match with an empty skill bar.
-    assert harness.skills.owned == {"skill-STRIKE_X2", "skill-SHIELD"}
-    assert set(harness.skills.slots) == {"skill-STRIKE_X2", "skill-SHIELD"}
+    assert harness.skills.owned == STARTER_IDS
+    assert set(harness.skills.slots) == STARTER_IDS
 
 
 async def test_the_reported_level_is_derived_not_the_stored_column() -> None:
@@ -553,7 +559,9 @@ async def test_unlocking_without_enough_gold_is_a_400() -> None:
     response = await harness.request("POST", "/skills/skill-WAR_GUARD/unlock")
 
     assert response.status_code == 400
-    assert harness.skills.owned == set()
+    # The free starters are owned by then; what must not have been granted is
+    # the node that was refused.
+    assert harness.skills.owned == STARTER_IDS
 
 
 async def test_unlocking_a_skill_you_own_is_a_409() -> None:
@@ -573,7 +581,7 @@ async def test_unlocking_a_node_whose_parent_is_missing_is_a_400() -> None:
     response = await harness.request("POST", "/skills/skill-WAR_MEND/unlock")
 
     assert response.status_code == 400
-    assert harness.skills.owned == set()
+    assert harness.skills.owned == STARTER_IDS
 
 
 async def test_unlocking_an_ultimate_before_finishing_the_unit_is_a_400() -> None:

@@ -1,3 +1,11 @@
+"""The realtime duo engine, driven through fake sockets.
+
+There are no rounds to step through here. Each player holds their own deck and
+answers at their own pace, so a test drives one side as far as it likes without
+touching the other -- which is the whole property these tests exist to pin
+down.
+"""
+
 import asyncio
 from typing import Any
 
@@ -10,9 +18,7 @@ from app.models.game.skill import SkillEffect
 from app.schemas.content.course_content import ChallengeOptionPublicRead, ChallengePublicRead
 from app.schemas.content.quiz import QuizSetWithAnswers
 from app.schemas.duo.events import ErrorCode, ServerEvent
-from app.services.duo import match_runtime
-from app.services.duo.combat import COMBO_TIER_2, MAX_HP
-from app.services.duo.loadout import EquippedSkill, PlayerLoadout, default_loadout
+from app.services.duo import clock, match_runtime
 from app.services.duo.match_runtime import DuoEngine
 from app.services.duo.persistence import (
     MatchResult,
@@ -23,14 +29,23 @@ from app.services.duo.persistence import (
 from app.services.duo.registry import DuoRegistry
 from app.services.duo.scoring import MatchOutcome
 from app.services.duo.state import LiveMatch, MatchSettings
+from app.services.game.combat import COMBO_TIER_2, MAX_HP
+from app.services.game.loadout import EquippedSkill, PlayerLoadout, default_loadout
 from app.services.game.player_card import PlayerStanding
 from app.services.game.settlement import ExpAward, GoldAward
 
-TIME_PER_QUESTION = 1
+# The speed reference an answer is scored against, not a deadline: nothing cuts
+# a player off mid-question any more.
+TIME_PER_QUESTION = 8
 QUESTION_COUNT = 3
 # Stand-in payouts; the real amounts are the concern of tests/test_rewards.py.
 EXP_PER_MATCH = 40
 GOLD_PER_MATCH = 20
+
+# How many correct answers in a row it takes to knock a full-health opponent
+# out, with room to spare. A deck this size is never cleared before the health
+# bar runs out, which is what makes it the deck for the knockout tests.
+KO_DECK = 8
 
 
 class FakeWebSocket:
@@ -187,16 +202,25 @@ def _user(user_id: str) -> User:
     return User(id=user_id, email=f"{user_id}@example.com", username=user_id.upper())
 
 
-def _settings() -> MatchSettings:
-    return MatchSettings(question_count=QUESTION_COUNT, time_per_question=TIME_PER_QUESTION)
+def _settings(question_count: int = QUESTION_COUNT) -> MatchSettings:
+    return MatchSettings(
+        question_count=question_count, time_per_question=TIME_PER_QUESTION
+    )
 
 
 @pytest.fixture(autouse=True)
 def _fast_pacing(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Collapse the cosmetic pauses so a full match runs in milliseconds."""
-    monkeypatch.setattr(match_runtime, "COUNTDOWN_SECONDS", 0.01)
-    monkeypatch.setattr(match_runtime, "REVEAL_PAUSE_SECONDS", 0.01)
-    monkeypatch.setattr(match_runtime, "BETWEEN_ROUNDS_SECONDS", 0.01)
+    """Collapse every pause the loop is timed by, so a full match runs in
+    milliseconds. The engine reads these off the module on every use, so
+    patching them here is enough."""
+    monkeypatch.setattr(clock, "COUNTDOWN_SECONDS", 0.01)
+    monkeypatch.setattr(clock, "TICK_SECONDS", 0.002)
+    monkeypatch.setattr(clock, "SNAPSHOT_SECONDS", 0.004)
+    monkeypatch.setattr(clock, "CORRECT_LOCKOUT_MS", 4)
+    monkeypatch.setattr(clock, "WRONG_LOCKOUT_MS", 8)
+    monkeypatch.setattr(clock, "STUN_SECONDS", 0.5)
+    monkeypatch.setattr(clock, "SECONDS_PER_ROUND", 0.2)
+    monkeypatch.setattr(clock, "SKILL_MIN_COOLDOWN_SECONDS", 0.05)
 
 
 @pytest.fixture
@@ -208,16 +232,30 @@ async def _settle(seconds: float = 0.08) -> None:
     await asyncio.sleep(seconds)
 
 
-async def _pair(engine: DuoEngine) -> tuple[FakeWebSocket, FakeWebSocket, User, User]:
+async def _pair(
+    engine: DuoEngine, question_count: int = QUESTION_COUNT
+) -> tuple[FakeWebSocket, FakeWebSocket, User, User]:
     one, two = _user("alice"), _user("bob")
     socket_one, socket_two = FakeWebSocket(), FakeWebSocket()
-    await engine.join_queue(one, socket_one, _settings())  # type: ignore[arg-type]
-    await engine.join_queue(two, socket_two, _settings())  # type: ignore[arg-type]
+    settings = _settings(question_count)
+    await engine.join_queue(one, socket_one, settings)  # type: ignore[arg-type]
+    await engine.join_queue(two, socket_two, settings)  # type: ignore[arg-type]
     return socket_one, socket_two, one, two
 
 
-def _current_round(socket: FakeWebSocket) -> dict[str, Any]:
-    data = socket.last(ServerEvent.ROUND_START)
+async def _engine_with(
+    question_count: int,
+) -> tuple[DuoEngine, FakeWebSocket, FakeWebSocket, User, User]:
+    engine = DuoEngine(
+        persistence=FakePersistence(question_count=question_count), registry=DuoRegistry()
+    )
+    socket_one, socket_two, one, two = await _pair(engine, question_count)
+    return engine, socket_one, socket_two, one, two
+
+
+def _current(socket: FakeWebSocket) -> dict[str, Any]:
+    """The question this player has on screen right now."""
+    data = socket.last(ServerEvent.QUESTION_PUSH)
     assert data is not None
     return data
 
@@ -225,15 +263,26 @@ def _current_round(socket: FakeWebSocket) -> dict[str, Any]:
 async def _answer(
     engine: DuoEngine, user: User, socket: FakeWebSocket, *, correct: bool
 ) -> None:
-    round_data = _current_round(socket)
-    question_id = round_data["question"]["id"]
+    push = _current(socket)
     suffix = "correct" if correct else "wrong"
     await engine.submit_answer(
         user.id,
         socket,  # type: ignore[arg-type]
-        round_data["round_index"],
-        f"{question_id}-{suffix}",
+        push["token"],
+        f"{push['question']['id']}-{suffix}",
     )
+
+
+async def _play(
+    engine: DuoEngine, user: User, socket: FakeWebSocket, *, correct: bool
+) -> None:
+    """Answer what is on screen and wait for the next question to arrive."""
+    await _answer(engine, user, socket, correct=correct)
+    await _settle(0.04)
+
+
+async def _use(engine: DuoEngine, user: User, socket: FakeWebSocket, code: str) -> None:
+    await engine.use_skill(user.id, socket, code)  # type: ignore[arg-type]
 
 
 # --- matchmaking -----------------------------------------------------------
@@ -283,109 +332,329 @@ async def test_players_wanting_different_settings_are_not_paired(
     assert socket_two.first(ServerEvent.QUEUE_WAITING) is not None
 
 
-# --- gameplay --------------------------------------------------------------
+# --- the deck --------------------------------------------------------------
 
 
-async def test_round_start_never_reveals_the_answer(engine: DuoEngine) -> None:
-    socket_one, _, one, _ = await _pair(engine)
+async def test_the_match_opens_with_both_decks_full(engine: DuoEngine) -> None:
+    socket_one, socket_two, one, _two = await _pair(engine)
     await _settle()
 
-    round_data = _current_round(socket_one)
-    for option in round_data["question"]["options"]:
+    started = socket_one.first(ServerEvent.MATCH_STARTED)
+    assert started is not None
+    assert started["deck_size"] == QUESTION_COUNT
+    assert started["speed_reference_seconds"] == TIME_PER_QUESTION
+    assert started["your_hp"] == MAX_HP
+    assert started["opponent_hp"] == MAX_HP
+    assert started["deadline_at"] > started["server_time_ms"]
+
+    # Both players open on the same question, in the same order.
+    assert _current(socket_one)["question"]["id"] == _current(socket_two)["question"]["id"]
+    assert _current(socket_one)["deck_remaining"] == QUESTION_COUNT
+    assert _current(socket_one)["retry"] is False
+
+    await engine.leave_match(one.id)
+
+
+async def test_a_pushed_question_never_reveals_the_answer(engine: DuoEngine) -> None:
+    socket_one, _socket_two, one, _two = await _pair(engine)
+    await _settle()
+
+    push = _current(socket_one)
+    for option in push["question"]["options"]:
         assert "correct" not in option
-    assert "correct_option_ids" not in round_data
-    assert "explanation" not in round_data
-    assert round_data["time_limit_seconds"] == TIME_PER_QUESTION
-    assert round_data["total_rounds"] == QUESTION_COUNT
+    assert "correct_option_ids" not in push
+    assert "explanation" not in push
 
     await engine.leave_match(one.id)
 
 
-async def test_answering_twice_in_one_round_is_rejected(engine: DuoEngine) -> None:
-    socket_one, _, one, _ = await _pair(engine)
+async def test_the_faster_player_moves_on_without_the_other(engine: DuoEngine) -> None:
+    """The point of the whole rewrite: nobody waits for anybody."""
+    socket_one, socket_two, one, _two = await _pair(engine)
     await _settle()
 
-    await _answer(engine, one, socket_one, correct=True)
-    await _answer(engine, one, socket_one, correct=False)
+    await _play(engine, one, socket_one, correct=True)
+    await _play(engine, one, socket_one, correct=True)
 
-    assert ErrorCode.ALREADY_ANSWERED.value in socket_one.errors()
+    # Three questions handed out to the player who answered, one to the player
+    # who has not touched their screen.
+    assert len(socket_one.all_of(ServerEvent.QUESTION_PUSH)) == 3
+    assert len(socket_two.all_of(ServerEvent.QUESTION_PUSH)) == 1
+    assert _current(socket_one)["deck_remaining"] == 1
+    assert _current(socket_two)["deck_remaining"] == QUESTION_COUNT
+
     await engine.leave_match(one.id)
 
 
-async def test_answering_a_stale_round_is_rejected(engine: DuoEngine) -> None:
-    socket_one, _, one, _ = await _pair(engine)
+async def test_a_wrong_answer_comes_round_again_at_the_back_of_the_deck(
+    engine: DuoEngine,
+) -> None:
+    socket_one, _socket_two, one, _two = await _pair(engine)
     await _settle()
 
-    round_data = _current_round(socket_one)
+    first_id = _current(socket_one)["question"]["id"]
+    await _play(engine, one, socket_one, correct=False)
+    # The deck is not shorter for having been wrong: the same question is
+    # still owed, it has just gone to the back.
+    assert _current(socket_one)["deck_remaining"] == QUESTION_COUNT
+    assert _current(socket_one)["question"]["id"] != first_id
+
+    await _play(engine, one, socket_one, correct=True)
+    await _play(engine, one, socket_one, correct=True)
+
+    back_again = _current(socket_one)
+    assert back_again["question"]["id"] == first_id
+    assert back_again["retry"] is True
+    assert back_again["deck_remaining"] == 1
+
+    await engine.leave_match(one.id)
+
+
+async def test_answering_the_same_question_twice_is_rejected(engine: DuoEngine) -> None:
+    socket_one, _socket_two, one, _two = await _pair(engine)
+    await _settle()
+
+    push = _current(socket_one)
     await engine.submit_answer(
-        one.id,
-        socket_one,  # type: ignore[arg-type]
-        round_data["round_index"] + 5,
-        f"{round_data['question']['id']}-correct",
+        one.id, socket_one, push["token"], f"{push['question']['id']}-correct"  # type: ignore[arg-type]
+    )
+    await engine.submit_answer(
+        one.id, socket_one, push["token"], f"{push['question']['id']}-wrong"  # type: ignore[arg-type]
     )
 
-    assert ErrorCode.ROUND_CLOSED.value in socket_one.errors()
+    assert ErrorCode.QUESTION_CLOSED.value in socket_one.errors()
+    await engine.leave_match(one.id)
+
+
+async def test_answering_a_stale_token_is_rejected(engine: DuoEngine) -> None:
+    socket_one, _socket_two, one, _two = await _pair(engine)
+    await _settle()
+
+    push = _current(socket_one)
+    await engine.submit_answer(
+        one.id, socket_one, "not-the-token", f"{push['question']['id']}-correct"  # type: ignore[arg-type]
+    )
+
+    assert ErrorCode.QUESTION_CLOSED.value in socket_one.errors()
     await engine.leave_match(one.id)
 
 
 async def test_an_option_from_another_question_is_rejected(engine: DuoEngine) -> None:
-    socket_one, _, one, _ = await _pair(engine)
+    socket_one, _socket_two, one, _two = await _pair(engine)
     await _settle()
 
-    round_data = _current_round(socket_one)
     await engine.submit_answer(
-        one.id, socket_one, round_data["round_index"], "not-an-option"  # type: ignore[arg-type]
+        one.id, socket_one, _current(socket_one)["token"], "not-an-option"  # type: ignore[arg-type]
     )
 
     assert ErrorCode.INVALID_OPTION.value in socket_one.errors()
     await engine.leave_match(one.id)
 
 
-async def test_opponent_is_told_an_answer_landed_but_not_which(
-    engine: DuoEngine,
-) -> None:
-    socket_one, socket_two, one, _ = await _pair(engine)
+# --- blows -----------------------------------------------------------------
+
+
+async def test_a_correct_answer_lands_its_blow_at_once(engine: DuoEngine) -> None:
+    socket_one, socket_two, one, _two = await _pair(engine)
     await _settle()
 
     await _answer(engine, one, socket_one, correct=True)
 
-    notice = socket_two.last(ServerEvent.ROUND_OPPONENT_ANSWERED)
-    assert notice == {"round_index": 0}
-
-    await engine.leave_match(one.id)
-
-
-async def test_both_answering_closes_the_round_before_the_timer(
-    engine: DuoEngine,
-) -> None:
-    socket_one, socket_two, one, two = await _pair(engine)
-    await _settle()
-
-    await _answer(engine, one, socket_one, correct=True)
-    await _answer(engine, two, socket_two, correct=False)
-    # Well under the 1s round timer: the round must already have been graded.
-    await _settle(0.1)
-
-    result = socket_one.last(ServerEvent.ROUND_RESULT)
+    result = socket_one.last(ServerEvent.ANSWER_RESULT)
     assert result is not None
-    assert result["you"]["correct"] is True
-    assert result["opponent"]["correct"] is False
-    assert result["you"]["points"] > 0
-    assert result["opponent"]["points"] == 0
+    assert result["correct"] is True
+    assert result["blow"]["damage"] > 0
+    assert result["opponent_hp"] < MAX_HP
+    assert result["points"] > 0
+    assert result["your_mana"] > 0
+    assert result["your_combo"] == 1
     assert result["explanation"] == "because q0"
 
+    # The other side is told the moment it lands, not at the end of a round --
+    # and they have not answered anything yet.
+    landed = socket_two.last(ServerEvent.OPPONENT_ANSWERED)
+    assert landed is not None
+    assert landed["damage"] == result["blow"]["damage"]
+    assert landed["your_hp"] == result["opponent_hp"]
+    assert socket_two.last(ServerEvent.ANSWER_RESULT) is None
+
     await engine.leave_match(one.id)
 
 
-async def test_a_full_match_ends_with_opposite_results_and_zero_sum_rating(
+async def test_a_wrong_answer_lands_nothing_and_costs_no_health(
     engine: DuoEngine,
 ) -> None:
-    socket_one, socket_two, one, two = await _pair(engine)
+    socket_one, socket_two, one, _two = await _pair(engine)
+    await _settle()
+
+    await _answer(engine, one, socket_one, correct=False)
+
+    result = socket_one.last(ServerEvent.ANSWER_RESULT)
+    assert result is not None
+    assert result["blow"] is None
+    assert result["points"] == 0
+    assert result["opponent_hp"] == MAX_HP
+    # Being wrong costs tempo and the combo, never health.
+    tick = socket_one.last(ServerEvent.STATE_TICK)
+    assert tick is not None
+    assert tick["your_hp"] == MAX_HP
+    assert socket_two.last(ServerEvent.OPPONENT_ANSWERED)["damage"] == 0  # type: ignore[index]
+
+    await engine.leave_match(one.id)
+
+
+async def test_a_miss_resets_the_combo(engine: DuoEngine) -> None:
+    socket_one, _socket_two, one, _two = await _pair(engine)
+    await _settle()
+
+    for correct in (True, True, False):
+        await _play(engine, one, socket_one, correct=correct)
+
+    combos = [data["your_combo"] for data in socket_one.all_of(ServerEvent.ANSWER_RESULT)]
+    assert combos == [1, 2, 0]
+
+    await engine.leave_match(one.id)
+
+
+async def test_a_snapshot_reports_both_sides(engine: DuoEngine) -> None:
+    socket_one, _socket_two, one, _two = await _pair(engine)
+    await _settle()
+    await _play(engine, one, socket_one, correct=True)
+
+    tick = socket_one.last(ServerEvent.STATE_TICK)
+    assert tick is not None
+    assert tick["your_hp"] == MAX_HP
+    assert tick["opponent_hp"] < MAX_HP
+    assert tick["your_deck_remaining"] == QUESTION_COUNT - 1
+    assert tick["opponent_deck_remaining"] == QUESTION_COUNT
+    assert tick["your_score"] > 0
+    assert tick["opponent_score"] == 0
+
+    await engine.leave_match(one.id)
+
+
+# --- how a match ends ------------------------------------------------------
+
+
+async def test_clearing_the_deck_wins_the_match(engine: DuoEngine) -> None:
+    socket_one, socket_two, one, _two = await _pair(engine)
+    await _settle()
 
     for _ in range(QUESTION_COUNT):
-        await _settle()
-        await _answer(engine, one, socket_one, correct=True)
-        await _answer(engine, two, socket_two, correct=False)
+        await _play(engine, one, socket_one, correct=True)
+    await _settle(0.2)
+
+    finished_one = socket_one.last(ServerEvent.MATCH_FINISHED)
+    finished_two = socket_two.last(ServerEvent.MATCH_FINISHED)
+    assert finished_one is not None and finished_two is not None
+    assert finished_one["end_reason"] == DuoMatchEndReason.DECK_CLEARED.value
+    assert finished_one["result"] == MatchOutcome.WIN.value
+    assert finished_two["result"] == MatchOutcome.LOSE.value
+    assert finished_one["your_deck_cleared"] is True
+    assert finished_two["your_deck_cleared"] is False
+    assert finished_one["your_correct"] == QUESTION_COUNT
+    # Won on the deck rather than the health bar: the loser is still standing.
+    assert finished_two["your_hp_left"] > 0
+    assert finished_one["rating"]["delta"] == -finished_two["rating"]["delta"]
+    assert finished_one["exp"]["delta"] == EXP_PER_MATCH
+    assert finished_one["gold"]["delta"] == GOLD_PER_MATCH
+
+
+async def test_clearing_the_deck_beats_a_healthier_opponent(engine: DuoEngine) -> None:
+    """Answering every question right is the race; health is the fight. The
+    race wins."""
+    socket_one, socket_two, one, _two = await _pair(engine)
+    await _settle()
+
+    match = engine.registry.match_of_user(one.id)
+    assert match is not None
+    # Walk in badly beaten up but still able to finish the deck -- the state
+    # this rule exists to decide.
+    match.players[one.id].hp = 5
+
+    for _ in range(QUESTION_COUNT):
+        await _play(engine, one, socket_one, correct=True)
+    await _settle(0.2)
+
+    finished_one = socket_one.last(ServerEvent.MATCH_FINISHED)
+    assert finished_one is not None
+    assert finished_one["end_reason"] == DuoMatchEndReason.DECK_CLEARED.value
+    assert finished_one["result"] == MatchOutcome.WIN.value
+    assert finished_one["your_hp_left"] < finished_one["opponent_hp_left"]
+    assert socket_two.last(ServerEvent.MATCH_FINISHED) is not None
+
+
+async def test_running_the_opponent_to_zero_ends_the_match() -> None:
+    engine, socket_one, socket_two, one, _two = await _engine_with(KO_DECK)
+    await _settle()
+
+    for _ in range(KO_DECK):
+        if socket_one.last(ServerEvent.MATCH_FINISHED) is not None:
+            break
+        await _play(engine, one, socket_one, correct=True)
+    await _settle(0.2)
+
+    finished_one = socket_one.last(ServerEvent.MATCH_FINISHED)
+    finished_two = socket_two.last(ServerEvent.MATCH_FINISHED)
+    assert finished_one is not None and finished_two is not None
+    assert finished_one["end_reason"] == DuoMatchEndReason.KNOCKOUT.value
+    assert finished_one["result"] == MatchOutcome.WIN.value
+    assert finished_two["result"] == MatchOutcome.LOSE.value
+    assert finished_one["opponent_hp_left"] == 0
+    assert finished_one["your_hp_left"] > 0
+    # The knockout arrives before the deck runs out, so nobody cleared it.
+    assert finished_one["your_deck_cleared"] is False
+
+
+async def test_the_killing_blow_is_announced_before_the_match_ends() -> None:
+    engine, socket_one, socket_two, one, _two = await _engine_with(KO_DECK)
+    await _settle()
+
+    for _ in range(KO_DECK):
+        if socket_one.last(ServerEvent.MATCH_FINISHED) is not None:
+            break
+        await _play(engine, one, socket_one, correct=True)
+    await _settle(0.2)
+
+    # The client can animate the blow that ended it instead of the bar jumping
+    # to zero on the summary screen.
+    landed = socket_two.last(ServerEvent.OPPONENT_ANSWERED)
+    assert landed is not None
+    assert landed["your_hp"] == 0
+    assert landed["damage"] > 0
+
+
+async def test_running_out_of_time_is_a_draw_when_neither_played(
+    engine: DuoEngine,
+) -> None:
+    socket_one, socket_two, one, _two = await _pair(engine)
+    await _settle()
+
+    match = engine.registry.match_of_user(one.id)
+    assert match is not None
+    # Bring the cap forward rather than waiting it out: the deadline is what
+    # is under test, not how long it is.
+    match.deadline_at = clock.seconds()
+    await _settle(0.2)
+
+    finished_one = socket_one.last(ServerEvent.MATCH_FINISHED)
+    finished_two = socket_two.last(ServerEvent.MATCH_FINISHED)
+    assert finished_one is not None and finished_two is not None
+    assert finished_one["end_reason"] == DuoMatchEndReason.TIME_UP.value
+    assert finished_one["result"] == MatchOutcome.DRAW.value
+    assert finished_two["result"] == MatchOutcome.DRAW.value
+    assert finished_one["your_hp_left"] == MAX_HP
+    assert finished_one["opponent_hp_left"] == MAX_HP
+
+
+async def test_running_out_of_time_decides_on_health(engine: DuoEngine) -> None:
+    socket_one, socket_two, one, _two = await _pair(engine)
+    await _settle()
+    await _play(engine, one, socket_one, correct=True)
+
+    match = engine.registry.match_of_user(one.id)
+    assert match is not None
+    match.deadline_at = clock.seconds()
     await _settle(0.2)
 
     finished_one = socket_one.last(ServerEvent.MATCH_FINISHED)
@@ -393,24 +662,14 @@ async def test_a_full_match_ends_with_opposite_results_and_zero_sum_rating(
     assert finished_one is not None and finished_two is not None
     assert finished_one["result"] == MatchOutcome.WIN.value
     assert finished_two["result"] == MatchOutcome.LOSE.value
-    assert finished_one["end_reason"] == DuoMatchEndReason.COMPLETED.value
-    assert finished_one["your_correct"] == QUESTION_COUNT
-    assert finished_two["your_correct"] == 0
-    assert finished_one["your_score"] == finished_two["opponent_score"]
-    assert finished_one["rating"]["delta"] == -finished_two["rating"]["delta"]
-    # Experience and gold sit alongside rating rather than nested under it, so
-    # a client reading `rating` keeps working.
-    assert finished_one["exp"]["delta"] == EXP_PER_MATCH
-    assert finished_one["gold"]["delta"] == GOLD_PER_MATCH
-    assert finished_one["exp"]["leveled_up"] is False
 
 
 async def test_a_forfeiting_player_is_the_only_one_marked_as_such(
     engine: DuoEngine,
 ) -> None:
-    socket_one, _socket_two, one, two = await _pair(engine)
-
+    socket_one, _socket_two, _one, two = await _pair(engine)
     await _settle()
+
     await engine.leave_match(two.id)
     await _settle(0.2)
 
@@ -422,12 +681,11 @@ async def test_a_forfeiting_player_is_the_only_one_marked_as_such(
 
 
 async def test_aborting_a_settled_match_does_not_cancel_it(engine: DuoEngine) -> None:
-    socket_one, socket_two, one, two = await _pair(engine)
+    socket_one, _socket_two, one, _two = await _pair(engine)
+    await _settle()
 
     for _ in range(QUESTION_COUNT):
-        await _settle()
-        await _answer(engine, one, socket_one, correct=True)
-        await _answer(engine, two, socket_two, correct=False)
+        await _play(engine, one, socket_one, correct=True)
     await _settle(0.2)
 
     match = engine.persistence.saved[0][0]  # type: ignore[attr-defined]
@@ -439,11 +697,8 @@ async def test_aborting_a_settled_match_does_not_cancel_it(engine: DuoEngine) ->
     assert match.status is DuoMatchStatus.FINISHED
 
 
-async def test_a_match_that_was_never_persisted_reports_no_payout(
-    engine: DuoEngine,
-) -> None:
-    engine.persistence = FakePersistence(question_count=1)  # type: ignore[assignment]
-    socket_one, _socket_two, one, _two = await _pair(engine)
+async def test_a_match_that_was_never_persisted_reports_no_payout() -> None:
+    engine, socket_one, _socket_two, one, _two = await _engine_with(question_count=1)
     await _settle(0.2)
 
     # Too few questions to play: aborted before anything was written, so there
@@ -455,35 +710,19 @@ async def test_a_match_that_was_never_persisted_reports_no_payout(
     # players are started, so an unplayable match costs nobody anything.
     assert engine.persistence.started == []  # type: ignore[attr-defined]
     assert socket_one.last(ServerEvent.MATCH_FINISHED) is None
+    assert engine.registry.match_of_user(one.id) is None
 
 
 async def test_a_finished_match_frees_both_players(engine: DuoEngine) -> None:
-    socket_one, socket_two, one, two = await _pair(engine)
+    socket_one, _socket_two, one, two = await _pair(engine)
+    await _settle()
 
     for _ in range(QUESTION_COUNT):
-        await _settle()
-        await _answer(engine, one, socket_one, correct=True)
-        await _answer(engine, two, socket_two, correct=True)
+        await _play(engine, one, socket_one, correct=True)
     await _settle(0.2)
 
     assert engine.registry.match_of_user(one.id) is None
     assert engine.registry.match_of_user(two.id) is None
-
-
-async def test_identical_play_is_a_draw_for_both(engine: DuoEngine) -> None:
-    socket_one, socket_two, one, two = await _pair(engine)
-
-    for _ in range(QUESTION_COUNT):
-        await _settle()
-        # Neither answers: equal score, equal correct count, equal time.
-        await asyncio.sleep(TIME_PER_QUESTION + 0.05)
-
-    await _settle(0.2)
-    finished_one = socket_one.last(ServerEvent.MATCH_FINISHED)
-    finished_two = socket_two.last(ServerEvent.MATCH_FINISHED)
-    assert finished_one is not None and finished_two is not None
-    assert finished_one["result"] == MatchOutcome.DRAW.value
-    assert finished_two["result"] == MatchOutcome.DRAW.value
 
 
 # --- disconnects -----------------------------------------------------------
@@ -509,7 +748,7 @@ async def test_never_coming_back_forfeits_the_match(
     engine: DuoEngine, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setattr(match_runtime, "DISCONNECT_GRACE_SECONDS", 1)
-    socket_one, socket_two, one, two = await _pair(engine)
+    socket_one, socket_two, one, _two = await _pair(engine)
     await _settle()
 
     await engine.on_disconnect(one.id, socket_one)  # type: ignore[arg-type]
@@ -527,7 +766,7 @@ async def test_reconnecting_within_grace_resumes_the_match(
     monkeypatch.setattr(match_runtime, "DISCONNECT_GRACE_SECONDS", 60)
     socket_one, socket_two, one, two = await _pair(engine)
     await _settle()
-    await _answer(engine, one, socket_one, correct=True)
+    await _play(engine, one, socket_one, correct=True)
 
     await engine.on_disconnect(one.id, socket_one)  # type: ignore[arg-type]
     replacement = FakeWebSocket()
@@ -535,9 +774,17 @@ async def test_reconnecting_within_grace_resumes_the_match(
 
     resume = replacement.first(ServerEvent.MATCH_RESUME)
     assert resume is not None
-    assert resume["your_score"] > 0
-    assert resume["already_answered"] is True
     assert resume["opponent"]["id"] == two.id
+    assert resume["your_score"] > 0
+    assert resume["your_deck_remaining"] == QUESTION_COUNT - 1
+    assert resume["opponent_deck_remaining"] == QUESTION_COUNT
+    assert resume["opponent_hp"] < MAX_HP
+    assert resume["your_mana"] > 0
+    assert resume["your_combo"] == 1
+    # The question that was on screen comes back with the token that answers
+    # it, so the reconnected client can carry on where it left off.
+    assert resume["token"] is not None
+    assert resume["question"] is not None
     assert socket_two.last(ServerEvent.OPPONENT_RECONNECTED) is not None
 
     await engine.leave_match(one.id)
@@ -546,7 +793,7 @@ async def test_reconnecting_within_grace_resumes_the_match(
 async def test_leaving_on_purpose_hands_the_win_to_the_opponent(
     engine: DuoEngine,
 ) -> None:
-    socket_one, socket_two, one, two = await _pair(engine)
+    _socket_one, socket_two, one, _two = await _pair(engine)
     await _settle()
 
     await engine.leave_match(one.id)
@@ -590,7 +837,7 @@ async def test_friend_room_flow_from_code_to_first_question(engine: DuoEngine) -
     await engine.start_match(host.id, socket_host)  # type: ignore[arg-type]
     await _settle()
 
-    assert socket_guest.first(ServerEvent.ROUND_START) is not None
+    assert socket_guest.first(ServerEvent.QUESTION_PUSH) is not None
     await engine.leave_match(host.id)
 
 
@@ -647,8 +894,7 @@ async def test_a_third_player_cannot_join_a_full_room(engine: DuoEngine) -> None
 
 
 async def test_a_match_without_enough_questions_is_aborted() -> None:
-    engine = DuoEngine(persistence=FakePersistence(question_count=1), registry=DuoRegistry())
-    socket_one, socket_two, one, _ = await _pair(engine)
+    engine, socket_one, socket_two, one, _two = await _engine_with(question_count=1)
     await _settle()
 
     assert ErrorCode.NO_QUESTIONS_AVAILABLE.value in socket_one.errors()
@@ -657,21 +903,18 @@ async def test_a_match_without_enough_questions_is_aborted() -> None:
 
 
 async def test_an_aborted_match_is_never_persisted() -> None:
-    persistence = FakePersistence(question_count=1)
-    engine = DuoEngine(persistence=persistence, registry=DuoRegistry())
-    await _pair(engine)
+    engine, _socket_one, _socket_two, _one, _two = await _engine_with(question_count=1)
     await _settle()
 
-    assert persistence.created == []
-    assert persistence.saved == []
+    assert engine.persistence.created == []  # type: ignore[attr-defined]
+    assert engine.persistence.saved == []  # type: ignore[attr-defined]
 
 
 async def test_the_players_are_started_exactly_once(engine: DuoEngine) -> None:
-    socket_one, socket_two, one, two = await _pair(engine)
+    socket_one, _socket_two, one, _two = await _pair(engine)
+    await _settle()
     for _ in range(QUESTION_COUNT):
-        await _settle()
-        await _answer(engine, one, socket_one, correct=True)
-        await _answer(engine, two, socket_two, correct=True)
+        await _play(engine, one, socket_one, correct=True)
     await _settle(0.2)
 
     assert len(engine.persistence.started) == 1  # type: ignore[attr-defined]
@@ -680,12 +923,11 @@ async def test_the_players_are_started_exactly_once(engine: DuoEngine) -> None:
 async def test_a_played_match_is_persisted_once(engine: DuoEngine) -> None:
     persistence = engine.persistence
     assert isinstance(persistence, FakePersistence)
-    socket_one, socket_two, one, two = await _pair(engine)
+    socket_one, _socket_two, one, _two = await _pair(engine)
+    await _settle()
 
     for _ in range(QUESTION_COUNT):
-        await _settle()
-        await _answer(engine, one, socket_one, correct=True)
-        await _answer(engine, two, socket_two, correct=False)
+        await _play(engine, one, socket_one, correct=True)
     await _settle(0.2)
 
     assert len(persistence.created) == 1
@@ -693,138 +935,13 @@ async def test_a_played_match_is_persisted_once(engine: DuoEngine) -> None:
     saved_match, result = persistence.saved[0]
     assert saved_match.status is DuoMatchStatus.FINISHED
     assert result.winner_id == one.id
-    assert len(saved_match.rounds_log) == QUESTION_COUNT
 
 
 # --- combat ----------------------------------------------------------------
 
 
-async def _pair_with(
-    question_count: int,
-) -> tuple[DuoEngine, FakeWebSocket, FakeWebSocket, User, User]:
-    engine = DuoEngine(
-        persistence=FakePersistence(question_count=question_count), registry=DuoRegistry()
-    )
-    socket_one, socket_two, one, two = await _pair(engine)
-    return engine, socket_one, socket_two, one, two
-
-
-async def test_a_round_starts_both_players_at_full_health(engine: DuoEngine) -> None:
-    socket_one, _socket_two, _one, _two = await _pair(engine)
-    await _settle()
-
-    start = _current_round(socket_one)
-    assert start["your_hp"] == MAX_HP
-    assert start["opponent_hp"] == MAX_HP
-    assert start["your_mana"] == 0
-    assert start["your_combo"] == 0
-    assert start["you_are_stunned"] is False
-
-
-async def test_a_correct_answer_damages_the_opponent_and_earns_mana(
-    engine: DuoEngine,
-) -> None:
-    socket_one, socket_two, one, two = await _pair(engine)
-    await _settle()
-    await _answer(engine, one, socket_one, correct=True)
-    await _answer(engine, two, socket_two, correct=False)
-    await _settle()
-
-    result = socket_one.last(ServerEvent.ROUND_RESULT)
-    assert result is not None
-    assert result["your_blow"]["damage"] > 0
-    assert result["opponent_blow"]["damage"] == 0
-    assert result["opponent_hp"] < MAX_HP
-    assert result["your_hp"] == MAX_HP
-    assert result["your_mana"] > result["opponent_blow"]["damage"]
-    assert result["your_combo"] == 1
-
-
-async def test_a_miss_resets_the_combo(engine: DuoEngine) -> None:
-    socket_one, socket_two, one, two = await _pair(engine)
-    for correct in (True, True, False):
-        await _settle()
-        await _answer(engine, one, socket_one, correct=correct)
-        await _answer(engine, two, socket_two, correct=False)
-    await _settle(0.2)
-
-    combos = [data["your_combo"] for data in socket_one.all_of(ServerEvent.ROUND_RESULT)]
-    assert combos == [1, 2, 0]
-
-
-async def test_nobody_answering_deals_no_damage(engine: DuoEngine) -> None:
-    socket_one, _socket_two, _one, _two = await _pair(engine)
-    for _ in range(QUESTION_COUNT):
-        await _settle()
-        await asyncio.sleep(TIME_PER_QUESTION + 0.05)
-    await _settle(0.2)
-
-    finished = socket_one.last(ServerEvent.MATCH_FINISHED)
-    assert finished is not None
-    # The empty match stays a draw rather than becoming a mutual knockout.
-    assert finished["result"] == MatchOutcome.DRAW.value
-    assert finished["your_hp_left"] == MAX_HP
-    assert finished["opponent_hp_left"] == MAX_HP
-
-
-async def test_running_the_opponent_to_zero_ends_the_match_early() -> None:
-    engine, socket_one, socket_two, one, two = await _pair_with(question_count=8)
-
-    for _ in range(8):
-        await _settle()
-        await _answer(engine, one, socket_one, correct=True)
-        await _answer(engine, two, socket_two, correct=False)
-    await _settle(0.2)
-
-    finished_one = socket_one.last(ServerEvent.MATCH_FINISHED)
-    finished_two = socket_two.last(ServerEvent.MATCH_FINISHED)
-    assert finished_one is not None and finished_two is not None
-    assert finished_one["end_reason"] == DuoMatchEndReason.KNOCKOUT.value
-    assert finished_one["result"] == MatchOutcome.WIN.value
-    assert finished_two["result"] == MatchOutcome.LOSE.value
-    assert finished_one["opponent_hp_left"] == 0
-    assert finished_one["your_hp_left"] > 0
-    # Stopped partway: fewer rounds were played than the match had questions.
-    assert len(socket_one.all_of(ServerEvent.ROUND_RESULT)) < 8
-
-
-async def test_the_knockout_round_still_reports_its_result() -> None:
-    engine, socket_one, socket_two, one, two = await _pair_with(question_count=8)
-
-    for _ in range(8):
-        await _settle()
-        await _answer(engine, one, socket_one, correct=True)
-        await _answer(engine, two, socket_two, correct=False)
-    await _settle(0.2)
-
-    # The killing blow is announced before the match ends, so the client can
-    # animate it instead of the health bar jumping to zero on the summary.
-    last_result = socket_two.last(ServerEvent.ROUND_RESULT)
-    assert last_result is not None
-    assert last_result["your_hp"] == 0
-    assert last_result["opponent_blow"]["damage"] > 0
-
-
-async def test_both_blows_land_in_the_round_that_knocks_someone_out() -> None:
-    engine, socket_one, socket_two, one, two = await _pair_with(question_count=8)
-
-    for _ in range(8):
-        await _settle()
-        # The player about to be knocked out answers second and still connects.
-        await _answer(engine, one, socket_one, correct=True)
-        await _answer(engine, two, socket_two, correct=True)
-    await _settle(0.3)
-
-    final = socket_one.last(ServerEvent.ROUND_RESULT)
-    assert final is not None
-    # Damage settles once the round closes, so answering first is not a way to
-    # knock someone out before they get to answer the same question.
-    assert final["your_blow"]["damage"] > 0
-    assert final["opponent_blow"]["damage"] > 0
-
-
-async def test_a_five_hit_combo_stuns_the_opponent_for_the_next_round() -> None:
-    engine, socket_one, socket_two, one, two = await _pair_with(question_count=8)
+async def test_a_five_hit_combo_stuns_the_opponent() -> None:
+    engine, socket_one, socket_two, one, two = await _engine_with(KO_DECK)
     await _settle()
 
     match = engine.registry.match_of_user(one.id)
@@ -834,62 +951,96 @@ async def test_a_five_hit_combo_stuns_the_opponent_for_the_next_round() -> None:
     match.players[one.id].combo = COMBO_TIER_2 - 1
     match.players[two.id].hp = MAX_HP
 
-    stunned_round = _current_round(socket_one)["round_index"] + 1
     await _answer(engine, one, socket_one, correct=True)
-    # Both answer so the round closes on the answers rather than the timer.
-    await _answer(engine, two, socket_two, correct=False)
-    await _settle(0.2)
 
-    crit = socket_one.last(ServerEvent.ROUND_RESULT)
+    crit = socket_one.last(ServerEvent.ANSWER_RESULT)
     assert crit is not None
-    assert crit["your_blow"]["is_critical"] is True
-    assert crit["your_blow"]["stuns_opponent"] is True
-    assert match.players[two.id].stunned_round_index == stunned_round
+    assert crit["blow"]["is_critical"] is True
+    assert crit["blow"]["stuns_opponent"] is True
     assert match.players[two.id].hp > 0
+    assert match.players[two.id].is_stunned(clock.seconds())
 
-    # The stunned player is told, and is refused if they try anyway.
-    start_two = _current_round(socket_two)
-    assert start_two["round_index"] == stunned_round
-    assert start_two["you_are_stunned"] is True
+    # The stunned player is told, and is refused if they try to answer anyway.
+    landed = socket_two.last(ServerEvent.OPPONENT_ANSWERED)
+    assert landed is not None
+    assert landed["your_stunned_until"] > 0
     await _answer(engine, two, socket_two, correct=True)
     assert ErrorCode.STUNNED.value in socket_two.errors()
 
+    await engine.leave_match(one.id)
 
-async def test_a_stunned_player_does_not_hold_the_round_open() -> None:
-    engine, socket_one, socket_two, one, two = await _pair_with(question_count=8)
+
+async def test_a_stunned_player_is_handed_no_new_questions() -> None:
+    engine, socket_one, socket_two, one, two = await _engine_with(KO_DECK)
     await _settle()
 
     match = engine.registry.match_of_user(one.id)
     assert match is not None
-    match.players[two.id].stunned_round_index = _current_round(socket_one)["round_index"]
+    await _play(engine, two, socket_two, correct=True)
+    pushes_before = len(socket_two.all_of(ServerEvent.QUESTION_PUSH))
 
-    before = len(socket_one.all_of(ServerEvent.ROUND_RESULT))
-    await _answer(engine, one, socket_one, correct=True)
-    # Well under the one-second round timer: if the stunned player were still
-    # counted, the round would have to wait out the full clock.
+    # Stun them between two questions: the next one has to wait it out.
+    match.players[two.id].question_token = None
+    match.players[two.id].current_index = None
+    match.players[two.id].stunned_until = clock.seconds() + 5
     await _settle(0.1)
 
-    assert len(socket_one.all_of(ServerEvent.ROUND_RESULT)) > before
+    assert len(socket_two.all_of(ServerEvent.QUESTION_PUSH)) == pushes_before
+    await engine.leave_match(one.id)
 
 
-async def test_resume_carries_health_mana_and_combo(engine: DuoEngine) -> None:
-    socket_one, socket_two, one, two = await _pair(engine)
+async def test_a_class_sets_the_starting_health_and_mana() -> None:
+    persistence = FakePersistence(question_count=4)
+    engine = DuoEngine(persistence=persistence, registry=DuoRegistry())
+    socket_one, _socket_two, one, two = await _pair(engine, question_count=4)
+    persistence.loadouts = {
+        one.id: _loadout(one.id, max_hp=130, starting_mana=10),
+        two.id: _loadout(two.id, max_hp=80, starting_mana=30),
+    }
     await _settle()
-    await _answer(engine, one, socket_one, correct=True)
-    await _answer(engine, two, socket_two, correct=False)
+
+    started = socket_one.first(ServerEvent.MATCH_STARTED)
+    assert started is not None
+    assert started["your_hp"] == 130
+    assert started["your_max_hp"] == 130
+    assert started["opponent_hp"] == 80
+    assert started["your_mana"] == 10
+
+    await engine.leave_match(one.id)
+
+
+async def test_a_player_with_no_class_still_plays_on_baseline_stats(
+    engine: DuoEngine,
+) -> None:
+    socket_one, _socket_two, one, _two = await _pair(engine)
     await _settle()
 
-    await engine.on_disconnect(one.id, socket_one)  # type: ignore[arg-type]
-    reconnected = FakeWebSocket()
-    await engine.on_connect(one, reconnected)  # type: ignore[arg-type]
+    started = socket_one.first(ServerEvent.MATCH_STARTED)
+    assert started is not None
+    assert started["your_hp"] == MAX_HP
+    assert started["your_mana"] == 0
 
-    resume = reconnected.last(ServerEvent.MATCH_RESUME)
-    assert resume is not None
-    assert resume["your_hp"] == MAX_HP
-    assert resume["opponent_hp"] < MAX_HP
-    assert resume["your_mana"] > 0
-    assert resume["your_combo"] == 1
-    assert resume["you_are_stunned"] is False
+    await engine.leave_match(one.id)
+
+
+async def test_a_streak_is_folded_into_the_health_a_player_starts_with() -> None:
+    persistence = FakePersistence(question_count=4)
+    engine = DuoEngine(persistence=persistence, registry=DuoRegistry())
+    socket_one, _socket_two, one, two = await _pair(engine, question_count=4)
+    # A loadout arrives with the buff already applied; the engine reads three
+    # finished numbers and never has to know where they came from.
+    persistence.loadouts = {
+        one.id: _loadout(one.id, max_hp=MAX_HP + 15, starting_mana=10),
+        two.id: _loadout(two.id, max_hp=MAX_HP, starting_mana=0),
+    }
+    await _settle()
+
+    started = socket_one.first(ServerEvent.MATCH_STARTED)
+    assert started is not None
+    assert started["your_hp"] == MAX_HP + 15
+    assert started["opponent_hp"] == MAX_HP
+
+    await engine.leave_match(one.id)
 
 
 # --- skills ----------------------------------------------------------------
@@ -938,56 +1089,18 @@ async def _pair_with_skills(
     *,
     one_skills: tuple[EquippedSkill, ...] = (),
     two_skills: tuple[EquippedSkill, ...] = (),
-    question_count: int = 8,
+    question_count: int = KO_DECK,
     one_max_hp: int = MAX_HP,
     two_max_hp: int = MAX_HP,
 ) -> tuple[DuoEngine, FakeWebSocket, FakeWebSocket, User, User]:
     persistence = FakePersistence(question_count=question_count)
     engine = DuoEngine(persistence=persistence, registry=DuoRegistry())
-    socket_one, socket_two, one, two = await _pair(engine)
+    socket_one, socket_two, one, two = await _pair(engine, question_count)
     persistence.loadouts = {
         one.id: _loadout(one.id, *one_skills, max_hp=one_max_hp),
         two.id: _loadout(two.id, *two_skills, max_hp=two_max_hp),
     }
     return engine, socket_one, socket_two, one, two
-
-
-async def _use(
-    engine: DuoEngine, user: User, socket: FakeWebSocket, code: str
-) -> None:
-    await engine.use_skill(
-        user.id,
-        socket,  # type: ignore[arg-type]
-        _current_round(socket)["round_index"],
-        code,
-    )
-
-
-async def test_a_class_sets_the_starting_health_and_mana() -> None:
-    persistence = FakePersistence(question_count=4)
-    engine = DuoEngine(persistence=persistence, registry=DuoRegistry())
-    socket_one, _socket_two, one, two = await _pair(engine)
-    persistence.loadouts = {
-        one.id: _loadout(one.id, max_hp=130, starting_mana=10),
-        two.id: _loadout(two.id, max_hp=80, starting_mana=30),
-    }
-    await _settle()
-
-    start = _current_round(socket_one)
-    assert start["your_hp"] == 130
-    assert start["opponent_hp"] == 80
-    assert start["your_mana"] == 10
-
-
-async def test_a_player_with_no_class_still_plays_on_baseline_stats(
-    engine: DuoEngine,
-) -> None:
-    socket_one, _socket_two, _one, _two = await _pair(engine)
-    await _settle()
-
-    start = _current_round(socket_one)
-    assert start["your_hp"] == MAX_HP
-    assert start["your_mana"] == 0
 
 
 async def test_a_skill_costs_mana_and_is_announced_to_both_players() -> None:
@@ -1004,9 +1117,13 @@ async def test_a_skill_costs_mana_and_is_announced_to_both_players() -> None:
     assert used_one is not None and used_two is not None
     assert used_one["skill_code"] == "SHIELD"
     assert used_one["user_id"] == one.id
-    # Both sides know what was cast.
-    assert used_two["skill_code"] == "SHIELD"
     assert used_one["your_mana"] == 100 - 40
+    assert used_one["ready_again_at"] > 0
+    # Both sides know what was cast; only the caster is told when it recharges.
+    assert used_two["skill_code"] == "SHIELD"
+    assert used_two["ready_again_at"] == 0
+
+    await engine.leave_match(one.id)
 
 
 async def test_an_unequipped_skill_is_refused() -> None:
@@ -1016,13 +1133,14 @@ async def test_an_unequipped_skill_is_refused() -> None:
     await _use(engine, one, socket_one, "SHIELD")
 
     assert ErrorCode.SKILL_NOT_EQUIPPED.value in socket_one.errors()
+    await engine.leave_match(one.id)
 
 
 async def test_a_skill_without_the_mana_is_refused() -> None:
     skill = _equipped(SkillEffect.HEAL, code="BIG_HEAL", mana_cost=90, magnitude=20)
     persistence = FakePersistence(question_count=4)
     engine = DuoEngine(persistence=persistence, registry=DuoRegistry())
-    socket_one, _socket_two, one, two = await _pair(engine)
+    socket_one, _socket_two, one, two = await _pair(engine, question_count=4)
     persistence.loadouts = {
         one.id: _loadout(one.id, skill, starting_mana=10),
         two.id: _loadout(two.id),
@@ -1032,9 +1150,10 @@ async def test_a_skill_without_the_mana_is_refused() -> None:
     await _use(engine, one, socket_one, "BIG_HEAL")
 
     assert ErrorCode.NOT_ENOUGH_MANA.value in socket_one.errors()
+    await engine.leave_match(one.id)
 
 
-async def test_the_same_skill_cannot_fire_twice_in_one_round() -> None:
+async def test_a_skill_cannot_be_recast_before_it_recharges() -> None:
     skill = _equipped(SkillEffect.DAMAGE_REDUCTION, code="SHIELD", mana_cost=10, magnitude=500)
     engine, socket_one, _socket_two, one, _two = await _pair_with_skills(
         one_skills=(skill,)
@@ -1044,84 +1163,79 @@ async def test_the_same_skill_cannot_fire_twice_in_one_round() -> None:
     await _use(engine, one, socket_one, "SHIELD")
     await _use(engine, one, socket_one, "SHIELD")
 
-    assert ErrorCode.SKILL_ALREADY_USED_THIS_ROUND.value in socket_one.errors()
+    assert ErrorCode.SKILL_ON_COOLDOWN.value in socket_one.errors()
+    await engine.leave_match(one.id)
 
 
-async def test_a_shield_halves_the_damage_taken() -> None:
+async def test_a_shield_halves_the_next_blow_taken() -> None:
     shield = _equipped(
         SkillEffect.DAMAGE_REDUCTION, code="SHIELD", mana_cost=10, magnitude=500
     )
     engine, socket_one, socket_two, one, two = await _pair_with_skills(
         two_skills=(shield,)
     )
+    await _settle()
 
-    await _settle()
-    await _answer(engine, one, socket_one, correct=True)
-    await _answer(engine, two, socket_two, correct=False)
-    await _settle()
-    unshielded = socket_one.last(ServerEvent.ROUND_RESULT)
-    assert unshielded is not None
-    plain_damage = unshielded["your_blow"]["damage"]
+    await _play(engine, one, socket_one, correct=True)
+    plain = socket_one.last(ServerEvent.ANSWER_RESULT)
+    assert plain is not None
+    plain_damage = plain["blow"]["damage"]
 
     await _use(engine, two, socket_two, "SHIELD")
-    await _answer(engine, one, socket_one, correct=True)
-    await _answer(engine, two, socket_two, correct=False)
-    await _settle()
+    await _play(engine, one, socket_one, correct=True)
 
-    shielded = socket_one.last(ServerEvent.ROUND_RESULT)
+    shielded = socket_one.last(ServerEvent.ANSWER_RESULT)
     assert shielded is not None
-    assert shielded["your_blow"]["damage"] == round(plain_damage * 0.5)
+    # Combo also rose between the two, so the shielded blow can only be
+    # compared against half of a blow that was already smaller.
+    assert shielded["blow"]["damage"] <= round(plain_damage * 0.5) + 1
+
+    await engine.leave_match(one.id)
 
 
-async def test_a_shield_only_lasts_the_round_it_was_cast_in() -> None:
+async def test_a_shield_is_spent_by_the_blow_it_absorbs() -> None:
     shield = _equipped(
         SkillEffect.DAMAGE_REDUCTION, code="SHIELD", mana_cost=10, magnitude=500
     )
     engine, socket_one, socket_two, one, two = await _pair_with_skills(
         two_skills=(shield,)
     )
-
     await _settle()
+
     await _use(engine, two, socket_two, "SHIELD")
-    await _answer(engine, one, socket_one, correct=True)
-    await _answer(engine, two, socket_two, correct=False)
-    await _settle()
-    shielded = socket_one.last(ServerEvent.ROUND_RESULT)
-
-    await _answer(engine, one, socket_one, correct=True)
-    await _answer(engine, two, socket_two, correct=False)
-    await _settle()
-    after = socket_one.last(ServerEvent.ROUND_RESULT)
+    await _play(engine, one, socket_one, correct=True)
+    shielded = socket_one.last(ServerEvent.ANSWER_RESULT)
+    await _play(engine, one, socket_one, correct=True)
+    after = socket_one.last(ServerEvent.ANSWER_RESULT)
 
     assert shielded is not None and after is not None
-    assert after["your_blow"]["damage"] > shielded["your_blow"]["damage"]
+    assert after["blow"]["damage"] > shielded["blow"]["damage"]
+
+    await engine.leave_match(one.id)
 
 
 async def test_a_damage_boost_multiplies_the_blow() -> None:
     boost = _equipped(
         SkillEffect.DOUBLE_DAMAGE, code="STRIKE_X2", mana_cost=10, magnitude=200
     )
-    engine, socket_one, socket_two, one, two = await _pair_with_skills(
+    engine, socket_one, _socket_two, one, _two = await _pair_with_skills(
         one_skills=(boost,)
     )
+    await _settle()
 
-    await _settle()
-    await _answer(engine, one, socket_one, correct=True)
-    await _answer(engine, two, socket_two, correct=False)
-    await _settle()
-    plain = socket_one.last(ServerEvent.ROUND_RESULT)
+    await _play(engine, one, socket_one, correct=True)
+    plain = socket_one.last(ServerEvent.ANSWER_RESULT)
     assert plain is not None
-    plain_damage = plain["your_blow"]["damage"]
+    plain_damage = plain["blow"]["damage"]
 
     await _use(engine, one, socket_one, "STRIKE_X2")
-    await _answer(engine, one, socket_one, correct=True)
-    await _answer(engine, two, socket_two, correct=False)
-    await _settle()
+    await _play(engine, one, socket_one, correct=True)
 
-    boosted = socket_one.last(ServerEvent.ROUND_RESULT)
+    boosted = socket_one.last(ServerEvent.ANSWER_RESULT)
     assert boosted is not None
-    # Combo also rose, so compare against the multiplier the blow reports.
-    assert boosted["your_blow"]["damage"] > plain_damage * 1.5
+    assert boosted["blow"]["damage"] > plain_damage * 1.5
+
+    await engine.leave_match(one.id)
 
 
 async def test_a_heal_restores_health_but_never_past_the_maximum() -> None:
@@ -1129,12 +1243,10 @@ async def test_a_heal_restores_health_but_never_past_the_maximum() -> None:
     engine, socket_one, socket_two, one, two = await _pair_with_skills(
         two_skills=(heal,)
     )
+    await _settle()
 
-    await _settle()
-    await _answer(engine, one, socket_one, correct=True)
-    await _answer(engine, two, socket_two, correct=False)
-    await _settle()
-    hurt = socket_two.last(ServerEvent.ROUND_RESULT)
+    await _play(engine, one, socket_one, correct=True)
+    hurt = socket_two.last(ServerEvent.OPPONENT_ANSWERED)
     assert hurt is not None
     assert hurt["your_hp"] < MAX_HP
 
@@ -1144,10 +1256,12 @@ async def test_a_heal_restores_health_but_never_past_the_maximum() -> None:
     assert healed["your_hp"] > hurt["your_hp"]
     assert healed["your_hp"] <= MAX_HP
 
+    await engine.leave_match(one.id)
+
 
 async def test_a_mana_burn_drains_the_opponent() -> None:
     burn = _equipped(SkillEffect.MANA_BURN, code="DRAIN", mana_cost=10, magnitude=40)
-    engine, socket_one, socket_two, one, _two = await _pair_with_skills(
+    engine, socket_one, _socket_two, one, _two = await _pair_with_skills(
         one_skills=(burn,)
     )
     await _settle()
@@ -1160,6 +1274,8 @@ async def test_a_mana_burn_drains_the_opponent() -> None:
     match = engine.registry.match_of_user(one.id)
     assert match is not None
     assert match.players[match.player_ids[1]].mana == 100 - 40
+
+    await engine.leave_match(one.id)
 
 
 async def test_revealing_options_is_private_to_the_caster() -> None:
@@ -1182,8 +1298,10 @@ async def test_revealing_options_is_private_to_the_caster() -> None:
     assert "removed_option_ids" in mine["private"]
     assert theirs["private"] is None
 
+    await engine.leave_match(one.id)
 
-async def test_revealing_options_after_answering_is_refused() -> None:
+
+async def test_revealing_options_with_no_question_open_is_refused() -> None:
     reveal = _equipped(
         SkillEffect.REMOVE_OPTIONS, code="REVEAL", mana_cost=10, magnitude=2
     )
@@ -1192,74 +1310,60 @@ async def test_revealing_options_after_answering_is_refused() -> None:
     )
     await _settle()
 
+    # Answered, and still inside the lockout that follows: there is nothing on
+    # screen to narrow, and the mana must not be taken for it.
     await _answer(engine, one, socket_one, correct=True)
     await _use(engine, one, socket_one, "REVEAL")
 
-    assert ErrorCode.ROUND_NOT_OPEN.value in socket_one.errors()
+    assert ErrorCode.QUESTION_CLOSED.value in socket_one.errors()
+    await engine.leave_match(one.id)
 
 
-async def test_a_time_penalty_shortens_only_the_opponents_next_round() -> None:
+async def test_a_time_penalty_holds_the_opponents_next_question_back() -> None:
     freeze = _equipped(
-        SkillEffect.TIME_PENALTY,
-        code="FREEZE",
-        mana_cost=10,
-        magnitude=5,
-        duration_rounds=1,
+        SkillEffect.TIME_PENALTY, code="FREEZE", mana_cost=10, magnitude=5
     )
-    # A longer round than the rest of the file uses, so a five-second penalty
-    # is visible instead of being clamped by the one-second floor. Rounds still
-    # close as soon as both players answer, so the test stays fast.
-    persistence = FakePersistence(question_count=8)
-    engine = DuoEngine(persistence=persistence, registry=DuoRegistry())
-    one, two = _user("alice"), _user("bob")
-    socket_one, socket_two = FakeWebSocket(), FakeWebSocket()
-    settings = MatchSettings(question_count=8, time_per_question=10)
-    await engine.join_queue(one, socket_one, settings)  # type: ignore[arg-type]
-    await engine.join_queue(two, socket_two, settings)  # type: ignore[arg-type]
-    persistence.loadouts = {
-        one.id: _loadout(one.id, freeze),
-        two.id: _loadout(two.id),
-    }
+    engine, socket_one, socket_two, one, two = await _pair_with_skills(
+        one_skills=(freeze,)
+    )
     await _settle()
 
-    before_two = _current_round(socket_two)["your_time_limit_seconds"]
+    match = engine.registry.match_of_user(one.id)
+    assert match is not None
+    await _play(engine, two, socket_two, correct=True)
+    pushes_before = len(socket_two.all_of(ServerEvent.QUESTION_PUSH))
+
     await _use(engine, one, socket_one, "FREEZE")
-    # The round in progress is untouched: the clock is shared.
-    assert _current_round(socket_two)["your_time_limit_seconds"] == before_two
-
-    await _answer(engine, one, socket_one, correct=True)
-    await _answer(engine, two, socket_two, correct=True)
-    await _settle()
-
-    next_two = _current_round(socket_two)
-    next_one = _current_round(socket_one)
-    assert next_two["your_time_limit_seconds"] == before_two - 5
+    # No deadline left to shorten, so the five seconds are taken off the other
+    # end: the target waits that much longer for their next question.
+    assert match.players[two.id].lockout_until >= clock.seconds() + 4
+    await _settle(0.1)
+    assert len(socket_two.all_of(ServerEvent.QUESTION_PUSH)) == pushes_before
     # And only the target is slowed.
-    assert next_one["your_time_limit_seconds"] == before_two
+    assert match.players[one.id].lockout_until < clock.seconds() + 1
+
+    await engine.leave_match(one.id)
 
 
 async def test_combo_keep_forgives_one_miss() -> None:
     focus = _equipped(
         SkillEffect.COMBO_KEEP, code="FOCUS", mana_cost=10, magnitude=1, duration_rounds=1
     )
-    engine, socket_one, socket_two, one, two = await _pair_with_skills(
+    engine, socket_one, _socket_two, one, _two = await _pair_with_skills(
         one_skills=(focus,)
     )
-
-    await _settle()
-    await _answer(engine, one, socket_one, correct=True)
-    await _answer(engine, two, socket_two, correct=False)
     await _settle()
 
+    await _play(engine, one, socket_one, correct=True)
     await _use(engine, one, socket_one, "FOCUS")
-    await _answer(engine, one, socket_one, correct=False)
-    await _answer(engine, two, socket_two, correct=False)
-    await _settle()
+    await _play(engine, one, socket_one, correct=False)
 
-    kept = socket_one.last(ServerEvent.ROUND_RESULT)
+    kept = socket_one.last(ServerEvent.ANSWER_RESULT)
     assert kept is not None
     # The miss would normally have reset this to zero.
     assert kept["your_combo"] == 1
+
+    await engine.leave_match(one.id)
 
 
 async def test_a_skill_cannot_be_cast_while_stunned() -> None:
@@ -1273,27 +1377,26 @@ async def test_a_skill_cannot_be_cast_while_stunned() -> None:
 
     match = engine.registry.match_of_user(one.id)
     assert match is not None
-    match.players[one.id].stunned_round_index = match.round_index
+    match.players[one.id].stunned_until = clock.seconds() + 5
 
     await _use(engine, one, socket_one, "SHIELD")
 
     assert ErrorCode.STUNNED.value in socket_one.errors()
+    await engine.leave_match(one.id)
 
 
 async def test_every_skill_fired_is_logged_for_the_match() -> None:
     shield = _equipped(
         SkillEffect.DAMAGE_REDUCTION, code="SHIELD", mana_cost=10, magnitude=500
     )
-    engine, socket_one, socket_two, one, two = await _pair_with_skills(
+    engine, socket_one, _socket_two, one, _two = await _pair_with_skills(
         one_skills=(shield,), question_count=4
     )
-
     await _settle()
+
     await _use(engine, one, socket_one, "SHIELD")
     for _ in range(4):
-        await _answer(engine, one, socket_one, correct=True)
-        await _answer(engine, two, socket_two, correct=True)
-        await _settle()
+        await _play(engine, one, socket_one, correct=True)
     await _settle(0.3)
 
     saved = engine.persistence.saved  # type: ignore[attr-defined]
@@ -1348,7 +1451,7 @@ async def test_a_match_that_cannot_be_written_hands_the_energy_back() -> None:
 
     persistence = ExplodingPersistence()
     engine = DuoEngine(persistence=persistence, registry=DuoRegistry())
-    socket_one, _socket_two, one, _two = await _pair(engine)
+    _socket_one, _socket_two, one, _two = await _pair(engine)
     await _settle(0.3)
 
     # `persisted` is still False when create_match raises, so this window is
@@ -1360,11 +1463,10 @@ async def test_a_match_that_cannot_be_written_hands_the_energy_back() -> None:
 
 
 async def test_a_played_match_is_never_refunded(engine: DuoEngine) -> None:
-    socket_one, socket_two, one, two = await _pair(engine)
+    socket_one, _socket_two, one, _two = await _pair(engine)
+    await _settle()
     for _ in range(QUESTION_COUNT):
-        await _settle()
-        await _answer(engine, one, socket_one, correct=True)
-        await _answer(engine, two, socket_two, correct=True)
+        await _play(engine, one, socket_one, correct=True)
     await _settle(0.2)
 
     assert engine.persistence.refunded == []  # type: ignore[attr-defined]
@@ -1372,26 +1474,8 @@ async def test_a_played_match_is_never_refunded(engine: DuoEngine) -> None:
 
 async def test_a_match_aborted_before_the_start_charges_nothing() -> None:
     # Too few questions: the draw is checked before the players are started.
-    engine = DuoEngine(persistence=FakePersistence(question_count=1), registry=DuoRegistry())
-    await _pair(engine)
+    engine, _socket_one, _socket_two, _one, _two = await _engine_with(question_count=1)
     await _settle(0.2)
 
     assert engine.persistence.started == []  # type: ignore[attr-defined]
     assert engine.persistence.refunded == []  # type: ignore[attr-defined]
-
-
-async def test_a_streak_is_folded_into_the_health_a_player_starts_with() -> None:
-    persistence = FakePersistence(question_count=4)
-    engine = DuoEngine(persistence=persistence, registry=DuoRegistry())
-    socket_one, _socket_two, one, two = await _pair(engine)
-    # A loadout arrives with the buff already applied; the engine reads three
-    # finished numbers and never has to know where they came from.
-    persistence.loadouts = {
-        one.id: _loadout(one.id, max_hp=MAX_HP + 15, starting_mana=10),
-        two.id: _loadout(two.id, max_hp=MAX_HP, starting_mana=0),
-    }
-    await _settle()
-
-    start = _current_round(socket_one)
-    assert start["your_hp"] == MAX_HP + 15
-    assert start["opponent_hp"] == MAX_HP

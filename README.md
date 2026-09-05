@@ -71,6 +71,11 @@ documentation is then disabled.
 | GET | `/api/v1/game/items` | Your inventory and the capped bonus your equipment gives |
 | PUT | `/api/v1/game/equipment` | Fill or clear the weapon, armor and trinket slots |
 | GET | `/api/v1/game/season/current` | The open season, your rating, tier and climb to the next |
+| GET | `/api/v1/battles/monsters` | The monster catalog: name, tier, stats and art code |
+| GET | `/api/v1/battles/lessons/{id}` | Which monster guards a lesson, and whether you have cleared it |
+| GET | `/api/v1/battles/courses/{id}/monsters` | Every gate of a course in one request, for the map |
+| GET | `/api/v1/battles/history` | Your recent lesson battles (paged) |
+| WS | `/api/v1/battles/ws` | Fight the monster guarding a lesson |
 
 Use the access token as `Authorization: Bearer <token>`.
 
@@ -350,6 +355,144 @@ For Google sign-in, the Android app sends `{"id_token": "<google-id-token>"}` ov
 HTTPS. Never send an unverified Google user ID as proof of identity. Existing local
 accounts are not linked automatically; account linking must be performed by an already
 authenticated user.
+
+## PvE — fighting a lesson
+
+Studying alone used to pay nothing: `POST /challenges/{id}/check` recorded the
+answer and refilled energy, but experience and gold only ever came out of duo.
+Since level and gold are what unlock skills, a player who only studied stayed at
+level 1 forever. A lesson battle closes that hole without inventing a second
+economy: **every gate on the learn path is guarded by a monster, and the
+questions of that lesson are the fight**.
+
+Answer correctly and you strike; answer wrongly, or let the clock run out, and
+the monster strikes back. A perfect run takes no damage at all.
+
+### How it joins the learn path
+
+Each answer inside a battle goes through the very same
+`ProgressService.check_answer` the ordinary lesson screen calls, in its own
+short session. That call is the **only** judge of right and wrong — the engine
+keeps an answer key, but only to reveal a question nobody answered and to hide
+wrong options for a `REMOVE_OPTIONS` skill.
+
+The consequence is that a battle needs no code at the progress layer at all: the
+attempt is recorded, the lesson rolls forward to `COMPLETED`, energy refills,
+the streak extends and unit-completion skills unlock exactly as if the player
+had used the study screen. `battle.finished` reports where the lesson stands, so
+the client can see both layers moved together.
+
+`POST /challenges/{id}/check` is untouched and still works. PvE runs **beside**
+the study screen, not instead of it.
+
+### Which monster guards which lesson
+
+Derived, never stored — so 945 gates need no rows of their own and an imported
+batch of lessons is guarded the moment it lands:
+
+```
+tier    = 1 + min(5, unit.order_index // 8)      # six tiers over the path
+is_boss = the lesson closing its unit (bank lessons are not on the path)
+```
+
+The catalog is twelve archetypes, six tiers of an ordinary monster and its boss,
+upserted by `code` on every start like the class and item catalogs. A monster is
+never deleted; retiring one is `is_active = false`.
+
+| Tier | Ordinary | Boss |
+| --- | --- | --- |
+| 1 | Slime (60 hp, 8 dmg) | Slime Vương (110 hp, 12) |
+| 2 | Yêu tinh (90, 12) | Tù trưởng Yêu tinh (140, 15) |
+| 3 | Sói hoang (110, 14) | Sói đầu đàn (160, 17) |
+| 4 | Golem đá (130, 16) | Thần đá (180, 19) |
+| 5 | Oán linh (150, 18) | Vua Lich (200, 21) |
+| 6 | Rồng con (170, 20) | Rồng lửa (220, 22) |
+
+### The fight
+
+The player's side is duo's combat maths unchanged (`app/services/game/combat.py`
+— speed, quick and heavy strikes, combos, class and equipment multipliers), so a
+build that works in PvP works here. Health, mana and the three equipped skills
+come from the same `LoadoutBuilder`.
+
+Only the monster's turn is new, and it is deliberately the simplest thing that
+can be balanced:
+
+| | |
+| --- | --- |
+| Monster's turn | A flat `attack_damage`, and only when the answer was wrong or missing |
+| Enrage | After `enrage_after_rounds` rounds its damage is multiplied, so a long lesson cannot be farmed as a safe place to sit |
+| Intent | `round.start` says what a miss will cost, shield included — without it a round reads as a coin toss |
+| Weakness | `weak_topic_id` feeds `resolve_blow`'s `element_multiplier` (x1.5). Wired, but seeded NULL: no balance leans on it yet |
+| `TIME_PENALTY`, `MANA_BURN` | Refused with `SKILL_NO_TARGET` **before** the mana is spent — a monster keeps no clock and no mana |
+
+A battle ends when the monster drops (`WON` / `MONSTER_DOWN`), when the player
+drops (`LOST` / `PLAYER_DOWN`), when the questions run out with the monster
+still up (`LOST` / `OUT_OF_QUESTIONS`), or when the player walks out or drops
+their connection (`ABANDONED` / `LEFT`).
+
+**Losing costs nothing.** No energy is charged, nothing is taken, and the
+answers already given keep their progress — so unlike duo there is no 30-second
+grace window and no resume: there would be nothing left to rescue.
+
+### Rewards
+
+| | Experience | Gold |
+| --- | --- | --- |
+| Win | +20 +3 per correct answer | +10 +1 per correct answer |
+| Boss | +30 | +15 |
+| No damage taken | +15 | — |
+| Beating a lesson again | 30% of the above, rounded down | 30%, rounded down |
+| Loss or walkout | 0 | 0 |
+
+Deliberately smaller than duo (a duo win is +50 +5 per answer) so PvP stays the
+fastest climb and PvE the reliable one. Chests drop from bosses only.
+
+Anti-grinding reuses the ledger that already exists rather than adding a
+"cleared" column: the first clear is a `BATTLE_WIN` row keyed on the **lesson**,
+so a lesson pays full price exactly once and forever; every run after it is a
+`BATTLE_REPLAY` row keyed on the **battle**. `first_clear` in `battle.finished`
+is simply whether that first row was accepted. PvE never touches Elo or the
+season ladder.
+
+### Protocol
+
+```
+ws://host/api/v1/battles/ws?token=<access-token>
+```
+
+Frames are `{"type": "<name>", "data": {...}}`, as in duo, but the events and
+error codes are PvE's own: a few names read the same, and that is the price of
+the two features never being able to break each other.
+
+**Client → server:** `battle.start` (`lesson_id`, optional
+`time_per_question`), `answer.submit`, `skill.use`, `battle.leave`, `ping`.
+
+**Server → client:** `connected`, `battle.started`, `round.start`,
+`round.result`, `skill.used`, `battle.finished`, `pong`, `error`.
+
+`round.start` never contains the answer — it carries the question, the clock,
+both health bars and `monster_intent`. `round.result` carries the correct
+options, the explanation, the blow that landed or the blow taken, and the new
+totals. `battle.finished` carries `outcome`, `end_reason`, `first_clear`, `exp`,
+`gold`, `loot`, `streak` and `lesson_progress`.
+
+Errors carry a stable `code` (`BATTLE_ALREADY_ACTIVE`, `LESSON_NOT_FOUND`,
+`NO_QUESTIONS_AVAILABLE`, `MONSTER_UNAVAILABLE`, `NOT_IN_BATTLE`,
+`ROUND_CLOSED`, `ALREADY_ANSWERED`, `INVALID_OPTION`, `SKILL_NOT_EQUIPPED`,
+`NOT_ENOUGH_MANA`, `SKILL_ALREADY_USED_THIS_ROUND`, `SKILL_NO_TARGET`,
+`INVALID_PAYLOAD`, `UNKNOWN_EVENT`).
+
+Battle state is held in the process, exactly like duo, so the **single worker**
+constraint now covers both features. Battles left running by a stopped process
+are closed at start-up; nothing is refunded because nothing was charged.
+
+To exercise the whole feature against a running server:
+
+```bash
+uvicorn app.main:app --port 8000
+python -m scripts.pve_smoke            # in another shell
+```
 
 ## Quality checks
 

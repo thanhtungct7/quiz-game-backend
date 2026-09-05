@@ -88,6 +88,30 @@ class StreakChange:
 
 
 @dataclass(frozen=True)
+class BattlePayout:
+    """What one lesson battle is worth, at both prices.
+
+    The caller works out the numbers (`services/pve/rewards.py`); which of the
+    two pairs is actually paid is decided here, by whether the gold ledger
+    accepts the first-clear row for this lesson.
+    """
+
+    first_clear_exp: int
+    first_clear_gold: int
+    replay_exp: int
+    replay_gold: int
+
+
+@dataclass(frozen=True)
+class BattleSettlement:
+    exp: ExpAward
+    gold: GoldAward
+    first_clear: bool
+    loot: LootDrop | None = None
+    streak: StreakChange | None = None
+
+
+@dataclass(frozen=True)
 class PlayerSettlement:
     exp: ExpAward
     gold: GoldAward
@@ -186,6 +210,84 @@ class GameSettlementService:
             gold=GoldAward(gold_before, gold_after),
             loot=loot,
             season=season,
+            streak=streak,
+        )
+
+    async def settle_battle(
+        self,
+        *,
+        user_id: str,
+        battle_id: str,
+        lesson_id: str,
+        payout: BattlePayout,
+        roll_chest: bool = False,
+    ) -> BattleSettlement:
+        """Pay out one won lesson battle.
+
+        Anti-grinding is the ledger's existing unique (user_id, reason, ref_id)
+        rather than a new column: the first clear is a BATTLE_WIN row keyed on
+        the *lesson*, so a lesson can pay full price exactly once and forever;
+        every run after it is a BATTLE_REPLAY row keyed on the *battle*, one row
+        each, at the smaller price. Settling the same battle twice inserts
+        neither and moves nothing.
+
+        Elo and the season ladder are deliberately untouched: PvE must not
+        climb the PvP ladder.
+        """
+        profile = await self.profiles.get_or_create(user_id)
+        exp_before = profile.total_exp
+        level_before = profile.level
+        gold_before = profile.gold
+
+        first_clear = await self.ledger.grant(
+            user_id=user_id,
+            amount=payout.first_clear_gold,
+            reason=GoldReason.BATTLE_WIN,
+            ref_id=lesson_id,
+            balance_after=gold_before + payout.first_clear_gold,
+        )
+        if first_clear:
+            exp_delta, gold_delta = payout.first_clear_exp, payout.first_clear_gold
+        else:
+            exp_delta, gold_delta = payout.replay_exp, payout.replay_gold
+            replayed = await self.ledger.grant(
+                user_id=user_id,
+                amount=gold_delta,
+                reason=GoldReason.BATTLE_REPLAY,
+                ref_id=battle_id,
+                balance_after=gold_before + gold_delta,
+            )
+            if not replayed:
+                # This battle has already been settled. Report the standing
+                # balance as an unchanged award rather than moving anything.
+                return BattleSettlement(
+                    exp=ExpAward(exp_before, exp_before, level_before, level_before),
+                    gold=GoldAward(gold_before, gold_before),
+                    first_clear=False,
+                )
+
+        gold_after = max(0, gold_before + gold_delta)
+        exp_after = apply_exp(exp_before, exp_delta, floor_at_current_level=True)
+        level_after = level_for_exp(exp_after)
+        await self.profiles.save(
+            profile,
+            {
+                "total_exp": exp_after,
+                "level": level_after,
+                "gold": gold_after,
+                "updated_at": datetime.now(UTC),
+            },
+        )
+        streak = await self._record_activity(user_id, profile)
+        # Chests are a boss reward here, so an ordinary lesson stays worth
+        # doing without turning the path into a slot machine.
+        loot = await self._roll_chest(user_id, battle_id, won=roll_chest)
+
+        return BattleSettlement(
+            exp=ExpAward(exp_before, exp_after, level_before, level_after),
+            gold=GoldAward(gold_before, gold_after),
+            first_clear=first_clear,
+            loot=loot,
             streak=streak,
         )
 

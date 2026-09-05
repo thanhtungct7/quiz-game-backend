@@ -8,9 +8,7 @@ from app.core.exceptions import (
     NotMatchMemberError,
 )
 from app.models.auth.user import User
-from app.models.content.challenge import Challenge, ChallengeType
 from app.models.duo.duo_match import DuoMatch, DuoMatchMode, DuoMatchStatus
-from app.models.duo.duo_match_round import DuoMatchRound
 from app.models.duo.duo_rating import DuoRating
 from app.models.game.duo_match_skill_use import DuoMatchSkillUse
 from app.models.game.user_game_profile import UserGameProfile
@@ -41,7 +39,7 @@ class FakeDuoMatchRepository:
         ]
         return owned[offset : offset + limit]
 
-    async def get_with_rounds(self, match_id: str) -> DuoMatch | None:
+    async def get_by_id(self, match_id: str) -> DuoMatch | None:
         return next((match for match in self.matches if match.id == match_id), None)
 
     async def list_skill_uses(self, match_id: str) -> list[DuoMatchSkillUse]:
@@ -99,19 +97,10 @@ class FakeGameProfileRepository:
         }
 
 
-class FakeChallengeRepository:
-    def __init__(self, challenges: list[Challenge] | None = None) -> None:
-        self.challenges = challenges or []
-
-    async def list_by_ids(self, challenge_ids: list[str]) -> list[Challenge]:
-        return [c for c in self.challenges if c.id in challenge_ids]
-
-
 def _match(
     *,
     winner_id: str | None = ONE,
     status: DuoMatchStatus = DuoMatchStatus.FINISHED,
-    rounds: list[DuoMatchRound] | None = None,
 ) -> DuoMatch:
     return DuoMatch(
         id="match-1",
@@ -132,7 +121,6 @@ def _match(
         created_at=datetime.now(UTC),
         finished_at=datetime.now(UTC),
         duration_seconds=140,
-        rounds=rounds or [],
     )
 
 
@@ -158,14 +146,13 @@ def _service(
     matches: list[DuoMatch] | None = None,
     ratings: dict[str, DuoRating] | None = None,
     users: dict[str, User] | None = None,
-    challenges: list[Challenge] | None = None,
     registry: DuoRegistry | None = None,
     profiles: dict[str, UserGameProfile] | None = None,
+    skill_uses: list[DuoMatchSkillUse] | None = None,
 ) -> DuoService:
     return DuoService(
-        matches=FakeDuoMatchRepository(matches or []),  # type: ignore[arg-type]
+        matches=FakeDuoMatchRepository(matches or [], skill_uses),  # type: ignore[arg-type]
         ratings=FakeDuoRatingRepository(ratings, users),  # type: ignore[arg-type]
-        challenges=FakeChallengeRepository(challenges),  # type: ignore[arg-type]
         profiles=FakeGameProfileRepository(profiles),  # type: ignore[arg-type]
         registry=registry or DuoRegistry(),
     )
@@ -278,45 +265,29 @@ async def test_an_opponent_the_lookup_missed_leaves_a_null_opponent() -> None:
 # --- match detail ----------------------------------------------------------
 
 
-async def test_match_detail_mirrors_each_round_for_player_two() -> None:
-    entry = DuoMatchRound(
+async def test_match_detail_is_mirrored_for_player_two() -> None:
+    """No round-by-round replay any more -- the two players work through their
+    own decks, so there is no shared round for a list to be of. What is still
+    told from the reader's own side is the score, the health and the skills."""
+    use = DuoMatchSkillUse(
         match_id="match-1",
-        round_index=0,
-        challenge_id="c1",
-        player_one_option_id="c1-a",
-        player_two_option_id="c1-b",
-        player_one_correct=True,
-        player_two_correct=False,
-        player_one_elapsed_ms=1200,
-        player_two_elapsed_ms=9000,
-        player_one_points=940,
-        player_two_points=0,
-        player_one_damage=18,
-        player_two_damage=0,
-        player_one_hp_after=100,
-        player_two_hp_after=82,
-        player_one_combo=1,
-        player_two_combo=0,
+        round_index=3,
+        user_id=ONE,
+        skill_id="skill-1",
+        skill_code="SHIELD",
+        mana_spent=30,
     )
-    challenge = Challenge(
-        id="c1",
-        lesson_id="lesson-1",
-        type=ChallengeType.SELECT,
-        question="Which one?",
-        order_index=1,
-    )
-    service = _service(matches=[_match(rounds=[entry])], challenges=[challenge])
+    service = _service(matches=[_match()], skill_uses=[use])
 
     detail = await service.get_match(TWO, "match-1")
 
-    [round_read] = detail.rounds
-    assert round_read.question == "Which one?"
-    assert round_read.my_option_id == "c1-b"
-    assert round_read.opponent_option_id == "c1-a"
-    assert round_read.my_correct is False
-    assert round_read.opponent_correct is True
-    assert round_read.my_points == 0
-    assert round_read.opponent_points == 940
+    assert detail.my_hp_left == 0
+    assert detail.opponent_hp_left == 64
+    assert detail.my_score == 3100
+    assert detail.opponent_score == 4200
+    [skill_use] = detail.skill_uses
+    assert skill_use.skill_code == "SHIELD"
+    assert skill_use.mine is False
 
 
 async def test_reading_someone_elses_match_is_refused() -> None:

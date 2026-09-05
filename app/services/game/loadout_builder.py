@@ -5,10 +5,11 @@ from app.repository.game.catalog_repository import CatalogRepository
 from app.repository.game.game_profile_repository import GameProfileRepository
 from app.repository.game.item_repository import ItemRepository
 from app.repository.game.user_skill_repository import UserSkillRepository
-from app.services.duo.combat import MAX_HP, PERMILLE_ONE, streak_buff
-from app.services.duo.loadout import EquippedSkill, PlayerLoadout, default_loadout
+from app.services.game.combat import MAX_HP, PERMILLE_ONE, streak_buff
 from app.services.game.leveling import level_for_exp
+from app.services.game.loadout import EquippedSkill, PlayerLoadout
 from app.services.game.loot import StatBonus, total_bonus
+from app.services.game.starters import ensure_starters
 
 
 class LoadoutBuilder:
@@ -31,20 +32,37 @@ class LoadoutBuilder:
         A player with no profile or no class still gets a playable loadout on
         baseline stats rather than being turned away, so the feature never
         locks an existing account out of a match.
+
+        Note what is deliberately *not* here: an early return for a player with
+        no profile row. A brand-new account whose very first action is a battle
+        has no profile yet, and returning `default_loadout` straight away sent
+        them in with an empty skill bar -- the same broken promise the starter
+        grant exists to keep, one layer further down. Everything below reads
+        cleanly with `profile` absent, so the grant is reached either way.
         """
         profile = await self.profiles.get_by_user(user_id)
-        if profile is None:
-            return default_loadout(user_id)
 
         max_hp = MAX_HP
         damage_permille = PERMILLE_ONE
         starting_mana = 0
-        if profile.class_code is not None:
+        if profile is not None and profile.class_code is not None:
             class_row = await self.catalog.get_class(profile.class_code)
             if class_row is not None and class_row.is_active:
                 max_hp = class_row.max_hp
                 damage_permille = class_row.damage_permille
                 starting_mana = class_row.starting_mana
+
+        rows = await self.skills.loadout(user_id)
+        if not rows:
+            # Nobody walks into a match with an empty bar -- and this is the
+            # last point before the fight where that can still be made true.
+            # A player who queued before ever opening a game screen reaches the
+            # engine without having touched `GameService`, so the grant cannot
+            # live there alone. Guarded on the bar being empty, so it costs a
+            # single extra query for exactly the players who need it, and
+            # nothing at all for everyone else.
+            if await ensure_starters(self.catalog, self.skills, user_id):
+                rows = await self.skills.loadout(user_id)
 
         equipped = [
             EquippedSkill(
@@ -57,7 +75,7 @@ class LoadoutBuilder:
                 magnitude=skill.magnitude,
                 duration_rounds=skill.duration_rounds,
             )
-            for slot, skill in await self.skills.loadout(user_id)
+            for slot, skill in rows
             # Defensive: a skill retired from the catalog stays in the loadout
             # table until the player edits it, and must not be usable.
             if skill.is_active and slot.slot_index < LOADOUT_SLOTS
@@ -77,15 +95,16 @@ class LoadoutBuilder:
                 if item.is_active
             ]
         )
-        buff = streak_buff(profile.day_streak)
+        day_streak = profile.day_streak if profile is not None else 0
+        buff = streak_buff(day_streak)
 
         return PlayerLoadout(
             user_id=user_id,
-            level=level_for_exp(profile.total_exp),
-            class_code=profile.class_code,
+            level=level_for_exp(profile.total_exp) if profile is not None else 1,
+            class_code=profile.class_code if profile is not None else None,
             max_hp=max_hp + gear.max_hp + buff.bonus_max_hp,
             starting_mana=starting_mana + gear.starting_mana + buff.bonus_starting_mana,
             damage_permille=damage_permille + gear.damage_permille,
-            day_streak=profile.day_streak,
+            day_streak=day_streak,
             skills=tuple(equipped),
         )

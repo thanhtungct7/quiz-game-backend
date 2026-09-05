@@ -31,11 +31,18 @@ class DuoMatchStatus(StrEnum):
 
 
 class DuoMatchEndReason(StrEnum):
+    # COMPLETED predates the realtime engine, which cannot end this way: a
+    # match now stops on a knockout, a cleared deck or the clock. Kept because
+    # finished rows in the database still carry it.
     COMPLETED = "COMPLETED"
     OPPONENT_LEFT = "OPPONENT_LEFT"
     OPPONENT_TIMEOUT = "OPPONENT_TIMEOUT"
     CANCELLED = "CANCELLED"
     KNOCKOUT = "KNOCKOUT"
+    # One player answered every question in their deck correctly.
+    DECK_CLEARED = "DECK_CLEARED"
+    # Neither did, and the match ran out of time; health decides it.
+    TIME_UP = "TIME_UP"
 
 
 class DuoMatch(Base):

@@ -57,27 +57,14 @@ class DuoMatchSummary(BaseModel):
     created_at: datetime
 
 
-class DuoRoundRead(BaseModel):
-    round_index: int
-    challenge_id: str | None
-    question: str | None
-    my_option_id: str | None
-    opponent_option_id: str | None
-    my_correct: bool
-    opponent_correct: bool
-    my_elapsed_ms: int | None
-    opponent_elapsed_ms: int | None
-    my_points: int
-    opponent_points: int
-    my_damage: int
-    opponent_damage: int
-    my_hp_after: int
-    opponent_hp_after: int
-    my_combo: int
-    opponent_combo: int
-
-
 class DuoSkillUseRead(BaseModel):
+    """One skill fired during a match.
+
+    `round_index` keeps its column name and means what it always did -- how
+    far into the match this was -- which with no rounds left to count is the
+    number of answers the caster had given by then.
+    """
+
     round_index: int
     skill_code: str
     mana_spent: int
@@ -86,7 +73,6 @@ class DuoSkillUseRead(BaseModel):
 
 
 class DuoMatchDetail(DuoMatchSummary):
-    rounds: list[DuoRoundRead]
     my_hp_left: int
     opponent_hp_left: int
     skill_uses: list[DuoSkillUseRead]

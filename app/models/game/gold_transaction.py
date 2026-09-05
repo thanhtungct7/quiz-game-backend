@@ -16,6 +16,10 @@ class GoldReason(StrEnum):
     ITEM_PURCHASE = "ITEM_PURCHASE"
     CLASS_CHANGE = "CLASS_CHANGE"
     LOOT_CHEST = "LOOT_CHEST"
+    # PvE. BATTLE_WIN is keyed on the lesson, so a lesson pays full price
+    # exactly once; BATTLE_REPLAY is keyed on the battle and pays a share.
+    BATTLE_WIN = "BATTLE_WIN"
+    BATTLE_REPLAY = "BATTLE_REPLAY"
 
 
 class GoldTransaction(Base):

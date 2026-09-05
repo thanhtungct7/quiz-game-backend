@@ -15,6 +15,7 @@ from app.models.game.duo_match_skill_use import DuoMatchSkillUse
 from app.models.game.game_class import GameClass
 from app.models.game.game_item import GameItem
 from app.models.game.gold_transaction import GoldTransaction
+from app.models.game.monster import Monster
 from app.models.game.season import GameSeason, SeasonRating
 from app.models.game.skill import Skill
 from app.models.game.user_daily_activity import UserDailyActivity
@@ -23,6 +24,7 @@ from app.models.game.user_item import LootGrant, UserEquipment, UserItem
 from app.models.game.user_skill import UserSkill, UserSkillLoadout
 from app.models.progress.user_challenge_progress import UserChallengeProgress
 from app.models.progress.user_lesson_progress import UserLessonProgress
+from app.models.pve.lesson_battle import LessonBattle
 
 __all__ = [
     "User",
@@ -54,4 +56,6 @@ __all__ = [
     "UserDailyActivity",
     "GameSeason",
     "SeasonRating",
+    "Monster",
+    "LessonBattle",
 ]

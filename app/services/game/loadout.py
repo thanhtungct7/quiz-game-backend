@@ -9,7 +9,7 @@ player swap to a stronger build in a second tab and reconnect buffed.
 from dataclasses import dataclass, field
 
 from app.models.game.skill import SkillEffect
-from app.services.duo.combat import MAX_HP, PERMILLE_ONE
+from app.services.game.combat import MAX_HP, PERMILLE_ONE
 
 
 @dataclass(frozen=True)
@@ -64,15 +64,19 @@ def default_loadout(user_id: str) -> PlayerLoadout:
 class ActiveEffect:
     """A skill's effect while it is still standing.
 
-    `expires_after_round` is inclusive: the effect applies while the current
-    round index is less than or equal to it. A skill fired in round N that
-    affects this round expires after N; one that affects the next round expires
-    after N + 1.
+    `expires_at` is inclusive: the effect applies while the caller's current
+    reading is less than or equal to it. The reading is deliberately unitless,
+    because the two engines count time differently and neither should have to
+    own a second copy of this logic -- duo passes a round index, so a skill
+    fired in round N that affects this round expires at N and one that affects
+    the next expires at N + 1; a lesson battle passes monotonic seconds, so the
+    same skill expires that many seconds out. Whatever the caller passes to
+    `add` it must also pass to `active`, `consume`, `prune` and `codes`.
     """
 
     effect: SkillEffect
     magnitude: int
-    expires_after_round: int
+    expires_at: float
     source_code: str = ""
 
 
@@ -89,40 +93,38 @@ class SkillUseRecord:
 
 @dataclass
 class EffectState:
-    """The effects standing on one player."""
+    """The effects standing on one player, on the caller's own time scale."""
 
     effects: list[ActiveEffect] = field(default_factory=list)
 
     def add(self, effect: ActiveEffect) -> None:
         self.effects.append(effect)
 
-    def active(self, effect: SkillEffect, round_index: int) -> ActiveEffect | None:
+    def active(self, effect: SkillEffect, at: float) -> ActiveEffect | None:
         return next(
             (
                 candidate
                 for candidate in self.effects
-                if candidate.effect is effect and candidate.expires_after_round >= round_index
+                if candidate.effect is effect and candidate.expires_at >= at
             ),
             None,
         )
 
-    def consume(self, effect: SkillEffect, round_index: int) -> ActiveEffect | None:
+    def consume(self, effect: SkillEffect, at: float) -> ActiveEffect | None:
         """Take an effect off the stack as it is spent."""
-        found = self.active(effect, round_index)
+        found = self.active(effect, at)
         if found is not None:
             self.effects.remove(found)
         return found
 
-    def prune(self, round_index: int) -> None:
+    def prune(self, at: float) -> None:
         self.effects = [
-            candidate
-            for candidate in self.effects
-            if candidate.expires_after_round >= round_index
+            candidate for candidate in self.effects if candidate.expires_at >= at
         ]
 
-    def codes(self, round_index: int) -> list[str]:
+    def codes(self, at: float) -> list[str]:
         return [
             candidate.source_code
             for candidate in self.effects
-            if candidate.expires_after_round >= round_index
+            if candidate.expires_at >= at
         ]

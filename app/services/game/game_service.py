@@ -48,6 +48,7 @@ from app.services.game.leveling import exp_for_level, exp_to_next_level, level_f
 from app.services.game.loot import StatBonus, total_bonus
 from app.services.game.season import TIER_FLOORS, tier_floor, tier_for_rating
 from app.services.game.season_service import ensure_active_season, opening_rating
+from app.services.game.starters import ensure_starters
 
 # Picking a class the first time is free. Changing later has a price, so a
 # build is a commitment rather than something re-rolled before every match.
@@ -118,33 +119,25 @@ class GameService:
         )
 
     async def _ensure_profile(self, user_id: str) -> UserGameProfile:
-        """Get or create the profile, granting the starter skills the first time."""
-        existing = await self.profiles.get_by_user(user_id)
-        if existing is not None:
-            return existing
+        """Get or create the profile, making sure the starter skills are there."""
         profile = await self.profiles.get_or_create(user_id)
         await self._grant_starters(user_id)
         return profile
 
     async def _grant_starters(self, user_id: str) -> None:
-        """Hand out the neutral starter skills and equip them.
+        """Make sure the neutral starters are owned, and equipped if the bar is
+        empty.
 
-        Done on first profile rather than at registration so it also covers
-        accounts that existed before the game layer did.
+        Run on every profile read, not only when `_ensure_profile` creates the
+        row. The profile is created by whatever the player happens to do first,
+        and that is almost never a `/game` call: queueing a match takes energy
+        (`energy_service`), finishing one pays out (`settlement`), finishing a
+        lesson refills (`lesson_rewards`) -- and all three reach
+        `profiles.get_or_create` on their own. Granting only on creation
+        therefore meant the row already existed by the time anyone asked for
+        their skills, and the starters were never handed out at all.
         """
-        catalog = await self.catalog.list_skills()
-        starters = [
-            skill for skill in catalog if skill.unlock_kind is SkillUnlockKind.STARTER
-        ]
-        if not starters:
-            return
-        owned = await self.skills.owned_skill_ids(user_id)
-        missing = [skill.id for skill in starters if skill.id not in owned]
-        await self.skills.grant_many(user_id, missing)
-        if not await self.skills.equipped_slot_by_skill_id(user_id):
-            await self.skills.replace_loadout(
-                user_id, [skill.id for skill in starters[:LOADOUT_SLOTS]]
-            )
+        await ensure_starters(self.catalog, self.skills, user_id)
 
     # --- classes -------------------------------------------------------------
 

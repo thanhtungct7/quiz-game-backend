@@ -23,6 +23,7 @@ from app.services.duo.match_runtime import (
 from app.services.duo.match_runtime import engine as default_engine
 from app.services.game.energy_service import EnergyService
 from app.services.game.season_service import roll_over_if_due
+from app.services.pve.housekeeping import sweep_battles
 
 logger = logging.getLogger(__name__)
 
@@ -83,6 +84,11 @@ async def sweep(engine: DuoEngine | None = None) -> None:
         ):
             logger.info("Closing idle duo room %s", match.room_code or match.match_id)
             await active.close_idle_room(match)
+
+    # PvE rides the same minute rather than starting a scheduler of its own.
+    stale_battles = await sweep_battles()
+    if stale_battles:
+        logger.info("Closed %d stale lesson battle(s)", stale_battles)
 
     opened = await roll_seasons()
     if opened is not None:

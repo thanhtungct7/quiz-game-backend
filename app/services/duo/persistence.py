@@ -16,7 +16,6 @@ from app.models.duo.duo_match import (
     DuoMatchEndReason,
     DuoMatchStatus,
 )
-from app.models.duo.duo_match_round import DuoMatchRound
 from app.models.duo.duo_rating import DEFAULT_RATING, DuoRating
 from app.models.game.duo_match_skill_use import DuoMatchSkillUse
 from app.repository.content.challenge_repository import ChallengeRepository
@@ -35,11 +34,11 @@ from app.schemas.content.quiz import QuizSetWithAnswers
 from app.schemas.duo.events import ErrorCode
 from app.services.content.quiz_service import QuizService
 from app.services.duo import rating as elo
-from app.services.duo.loadout import PlayerLoadout
-from app.services.duo.loadout_builder import LoadoutBuilder
 from app.services.duo.scoring import MatchOutcome
-from app.services.duo.state import LiveMatch, MatchSettings, RoundRecord
+from app.services.duo.state import LiveMatch, MatchSettings
 from app.services.game.energy_service import EnergyService
+from app.services.game.loadout import PlayerLoadout
+from app.services.game.loadout_builder import LoadoutBuilder
 from app.services.game.player_card import PlayerStanding, standing_of
 from app.services.game.rewards import RewardInput
 from app.services.game.settlement import (
@@ -291,12 +290,6 @@ class DatabaseDuoPersistence:
                     "duration_seconds": result.duration_seconds,
                 },
             )
-            await matches.add_rounds(
-                [
-                    _to_round_row(match.match_id, entry, one_id, two_id)
-                    for entry in match.rounds_log
-                ]
-            )
             await matches.add_skill_uses(
                 [
                     DuoMatchSkillUse(
@@ -387,33 +380,3 @@ def _rating_update(record: DuoRating, new_rating: int, score: float) -> dict[str
         "best_streak": max(record.best_streak, streak),
         "updated_at": datetime.now(UTC),
     }
-
-
-def _to_round_row(
-    match_id: str, record: RoundRecord, one_id: str, two_id: str | None
-) -> DuoMatchRound:
-    one_answer = record.answers.get(one_id)
-    two_answer = record.answers.get(two_id) if two_id is not None else None
-    one_blow = record.blows.get(one_id)
-    two_blow = record.blows.get(two_id) if two_id is not None else None
-    return DuoMatchRound(
-        match_id=match_id,
-        round_index=record.round_index,
-        challenge_id=record.challenge_id,
-        player_one_option_id=one_answer.option_id if one_answer else None,
-        player_two_option_id=two_answer.option_id if two_answer else None,
-        player_one_correct=one_answer.is_correct if one_answer else False,
-        player_two_correct=two_answer.is_correct if two_answer else False,
-        player_one_elapsed_ms=one_answer.elapsed_ms if one_answer else None,
-        player_two_elapsed_ms=two_answer.elapsed_ms if two_answer else None,
-        player_one_points=one_answer.points if one_answer else 0,
-        player_two_points=two_answer.points if two_answer else 0,
-        player_one_damage=one_blow.final_damage if one_blow else 0,
-        player_two_damage=two_blow.final_damage if two_blow else 0,
-        player_one_hp_after=record.hp_after.get(one_id, STARTING_HP),
-        player_two_hp_after=(
-            record.hp_after.get(two_id, STARTING_HP) if two_id is not None else STARTING_HP
-        ),
-        player_one_combo=one_blow.combo_count if one_blow else 0,
-        player_two_combo=two_blow.combo_count if two_blow else 0,
-    )

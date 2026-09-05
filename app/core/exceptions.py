@@ -82,6 +82,12 @@ class ChallengeOptionNotFoundError(ApplicationError):
     """Raised when a challenge option cannot be found."""
 
 
+class InvalidAnswerSubmissionError(ApplicationError):
+    """Raised when an answer's shape does not match the challenge type --
+    a single option sent for an ORDER challenge, or a word sequence sent for
+    a single-choice one."""
+
+
 class TopicNotFoundError(ApplicationError):
     """Raised when a topic cannot be found."""
 
@@ -140,3 +146,7 @@ class InvalidEquipmentError(ApplicationError):
 
 class SeasonNotFoundError(ApplicationError):
     """Raised when there is no active season."""
+
+
+class MonsterUnavailableError(ApplicationError):
+    """Raised when no monster in the catalog can guard a lesson."""

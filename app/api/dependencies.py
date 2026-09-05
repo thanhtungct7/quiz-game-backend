@@ -26,9 +26,11 @@ from app.repository.game.catalog_repository import CatalogRepository
 from app.repository.game.game_profile_repository import GameProfileRepository
 from app.repository.game.gold_transaction_repository import GoldTransactionRepository
 from app.repository.game.item_repository import ItemRepository
+from app.repository.game.monster_repository import MonsterRepository
 from app.repository.game.season_repository import SeasonRepository
 from app.repository.game.user_skill_repository import UserSkillRepository
 from app.repository.progress.user_progress_repository import UserProgressRepository
+from app.repository.pve.lesson_battle_repository import LessonBattleRepository
 from app.services.auth.auth_service import AuthService
 from app.services.auth.avatar_storage import (
     AvatarStorage,
@@ -44,6 +46,7 @@ from app.services.duo.duo_service import DuoService
 from app.services.game.game_service import GameService
 from app.services.game.lesson_rewards import LessonRewardService
 from app.services.progress.progress_service import ProgressService
+from app.services.pve.battle_service import BattleService
 
 bearer_scheme = HTTPBearer(auto_error=False)
 DatabaseSession = Annotated[AsyncSession, Depends(get_db)]
@@ -218,9 +221,18 @@ def get_duo_service(db: DatabaseSession) -> DuoService:
     return DuoService(
         matches=DuoMatchRepository(db),
         ratings=DuoRatingRepository(db),
-        challenges=ChallengeRepository(db),
         profiles=GameProfileRepository(db),
         seasons=SeasonRepository(db),
+    )
+
+
+def get_battle_service(db: DatabaseSession) -> BattleService:
+    return BattleService(
+        monsters=MonsterRepository(db),
+        lessons=LessonRepository(db),
+        units=UnitRepository(db),
+        courses=CourseRepository(db),
+        battles=LessonBattleRepository(db),
     )
 
 
@@ -237,3 +249,4 @@ ProgressServiceDependency = Annotated[ProgressService, Depends(get_progress_serv
 DuoServiceDependency = Annotated[DuoService, Depends(get_duo_service)]
 GameServiceDependency = Annotated[GameService, Depends(get_game_service)]
 UserServiceDependency = Annotated[UserService, Depends(get_user_service)]
+BattleServiceDependency = Annotated[BattleService, Depends(get_battle_service)]
