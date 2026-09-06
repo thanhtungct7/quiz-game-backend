@@ -56,6 +56,8 @@ documentation is then disabled.
 | GET | `/api/v1/courses/{id}/tree` | The whole learn path in one ETag-cacheable payload |
 | GET | `/api/v1/lessons/{id}/challenges` | One lesson's questions (paged, `limit` ≤ 100) |
 | GET | `/api/v1/progress/courses/{id}` | Your progress for every lesson of a course |
+| GET | `/api/v1/profile/me` | Your whole profile in one call: identity, level, CEFR band, PvP record and study totals |
+| GET | `/api/v1/profile/{user_id}` | Another player's public card, as opened from a leaderboard row or a lobby |
 | GET | `/api/v1/duo/matches` | Your 1v1 match history |
 | GET | `/api/v1/duo/matches/{id}` | One match with its round-by-round detail |
 | GET | `/api/v1/duo/me/stats` | Your rating, W/L/D, win rate and streak |

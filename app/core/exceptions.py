@@ -150,3 +150,7 @@ class SeasonNotFoundError(ApplicationError):
 
 class MonsterUnavailableError(ApplicationError):
     """Raised when no monster in the catalog can guard a lesson."""
+
+
+class UserNotFoundError(ApplicationError):
+    """Raised when a profile is read for a user id that does not exist."""

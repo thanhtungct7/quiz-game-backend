@@ -29,6 +29,7 @@ from app.repository.game.item_repository import ItemRepository
 from app.repository.game.monster_repository import MonsterRepository
 from app.repository.game.season_repository import SeasonRepository
 from app.repository.game.user_skill_repository import UserSkillRepository
+from app.repository.profile.profile_stats_repository import ProfileStatsRepository
 from app.repository.progress.user_progress_repository import UserProgressRepository
 from app.repository.pve.lesson_battle_repository import LessonBattleRepository
 from app.services.auth.auth_service import AuthService
@@ -45,6 +46,7 @@ from app.services.content.quiz_service import QuizService
 from app.services.duo.duo_service import DuoService
 from app.services.game.game_service import GameService
 from app.services.game.lesson_rewards import LessonRewardService
+from app.services.profile.profile_service import ProfileService
 from app.services.progress.progress_service import ProgressService
 from app.services.pve.battle_service import BattleService
 
@@ -217,6 +219,13 @@ def get_game_service(db: DatabaseSession) -> GameService:
     )
 
 
+def get_profile_service(db: DatabaseSession) -> ProfileService:
+    """One repository, not the eight `GameService` needs: an aggregated profile
+    is a read across a fixed set of tables, and pulling in the other services
+    would drag their write paths along with them."""
+    return ProfileService(stats=ProfileStatsRepository(db), config=settings)
+
+
 def get_duo_service(db: DatabaseSession) -> DuoService:
     return DuoService(
         matches=DuoMatchRepository(db),
@@ -250,3 +259,4 @@ DuoServiceDependency = Annotated[DuoService, Depends(get_duo_service)]
 GameServiceDependency = Annotated[GameService, Depends(get_game_service)]
 UserServiceDependency = Annotated[UserService, Depends(get_user_service)]
 BattleServiceDependency = Annotated[BattleService, Depends(get_battle_service)]
+ProfileServiceDependency = Annotated[ProfileService, Depends(get_profile_service)]

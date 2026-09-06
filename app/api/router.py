@@ -12,6 +12,7 @@ from app.api.routes.content import (
 )
 from app.api.routes.duo import duo, duo_ws
 from app.api.routes.game import game
+from app.api.routes.profile import profile
 from app.api.routes.progress import progress
 from app.api.routes.pve import battle, battle_ws
 
@@ -25,6 +26,7 @@ api_router.include_router(lessons.router, prefix="/lessons", tags=["course-conte
 api_router.include_router(challenges.router, prefix="/challenges", tags=["course-content"])
 api_router.include_router(topics.router, prefix="/topics", tags=["course-content"])
 api_router.include_router(progress.router, prefix="/progress", tags=["progress"])
+api_router.include_router(profile.router, prefix="/profile", tags=["profile"])
 api_router.include_router(duo.router, prefix="/duo", tags=["duo"])
 api_router.include_router(duo_ws.router, prefix="/duo", tags=["duo"])
 api_router.include_router(game.router, prefix="/game", tags=["game"])
