@@ -56,6 +56,16 @@ TOEIC_ANCHORS: tuple[tuple[int, int], ...] = (
     (93, TOEIC_CEILING),
 )
 
+# The three chốt chặn năng lực: a level cap sits one below the level a new
+# CEFR band opens at (`BAND_FLOORS`), so crossing into A2/B1/B2/C1/C2 always
+# means passing the Benchmark Exam bound to the cap first -- experience alone
+# can carry a player up to the cap, never past it. `leveling.effective_level`
+# is what actually enforces this; the tuple lives here because every value in
+# it is read straight off `BAND_FLOORS`, not invented independently.
+LEVEL_CAPS: tuple[int, ...] = tuple(
+    floor - 1 for _band, floor in reversed(BAND_FLOORS) if floor > 1
+)
+
 
 def cefr_for_level(level: int) -> CefrBand:
     """The band a player of this level has reached."""

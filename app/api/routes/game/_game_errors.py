@@ -3,6 +3,7 @@ from typing import NoReturn
 from fastapi import HTTPException, status
 
 from app.core.exceptions import (
+    BenchmarkExamNotEligibleError,
     GameClassNotFoundError,
     InvalidEquipmentError,
     InvalidLoadoutError,
@@ -19,6 +20,7 @@ _BAD_REQUEST_ERRORS = (
     NotEnoughGoldError,
     InvalidLoadoutError,
     InvalidEquipmentError,
+    BenchmarkExamNotEligibleError,
 )
 
 

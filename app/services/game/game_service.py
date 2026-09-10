@@ -9,6 +9,7 @@ from datetime import UTC, datetime
 from uuid import uuid4
 
 from app.core.exceptions import (
+    BenchmarkExamNotEligibleError,
     GameClassNotFoundError,
     InvalidEquipmentError,
     InvalidLoadoutError,
@@ -43,9 +44,16 @@ from app.schemas.game.game import (
     SkillNodeRead,
     SkillTreeRead,
 )
+from app.services.game.cefr import LEVEL_CAPS
 from app.services.game.energy import MAX_ENERGY, current_energy, next_regen_at
-from app.services.game.leveling import exp_for_level, exp_to_next_level, level_for_exp
-from app.services.game.loot import StatBonus, total_bonus
+from app.services.game.leveling import (
+    effective_level,
+    exp_for_level,
+    exp_to_next_level,
+    level_for_exp,
+    pending_benchmark_level,
+)
+from app.services.game.loot import RewardBonus, total_bonus
 from app.services.game.season import TIER_FLOORS, tier_floor, tier_for_rating
 from app.services.game.season_service import ensure_active_season, opening_rating
 from app.services.game.starters import ensure_starters
@@ -87,8 +95,11 @@ class GameService:
         """
         profile = await self._ensure_profile(user_id)
         # Derived from total_exp rather than read from the column, so a stale
-        # cached level can never be shown to the player.
-        level = level_for_exp(profile.total_exp)
+        # cached level can never be shown to the player -- and held at the
+        # player's Benchmark Exam cap, same as every other read of "the
+        # current level".
+        level = effective_level(profile.total_exp, profile.benchmark_cleared_level)
+        pending_cap = pending_benchmark_level(profile.total_exp, profile.benchmark_cleared_level)
         class_row = (
             await self.catalog.get_class(profile.class_code)
             if profile.class_code is not None
@@ -99,15 +110,57 @@ class GameService:
             level=level,
             total_exp=profile.total_exp,
             exp_for_current_level=exp_for_level(level),
-            exp_for_next_level=exp_for_level(level + 1),
-            exp_to_next_level=exp_to_next_level(profile.total_exp),
+            # Capped at the current level while a Benchmark Exam is pending:
+            # there is no next level to show progress toward until it is
+            # passed, so both read as "nothing more to gain yet" rather than
+            # racing ahead of a level number that cannot move.
+            exp_for_next_level=(
+                exp_for_level(level) if pending_cap is not None else exp_for_level(level + 1)
+            ),
+            exp_to_next_level=(
+                0 if pending_cap is not None else exp_to_next_level(profile.total_exp)
+            ),
             gold=profile.gold,
             class_code=profile.class_code,
             class_name=class_row.name if class_row is not None else None,
             energy=self._energy_read(profile),
             day_streak=profile.day_streak,
             best_day_streak=profile.best_day_streak,
+            pending_benchmark_level=pending_cap,
         )
+
+    # --- benchmark exam --------------------------------------------------------
+
+    async def record_benchmark_pass(self, user_id: str, cap_level: int) -> GameProfileRead:
+        """Clear one chốt chặn năng lực: the caller (the Benchmark Exam
+        grading flow) asserts a pass, and this is where that becomes a raised
+        `benchmark_cleared_level`.
+
+        Refused for a cap the player's raw level has not reached yet -- an
+        exam cannot be sat early -- and for anything not in `LEVEL_CAPS`, so a
+        stray level number can never be recorded as cleared. Passing the same
+        cap twice, or a lower one than already held, is a no-op rather than an
+        error: `benchmark_cleared_level` only ever rises.
+        """
+        if cap_level not in LEVEL_CAPS:
+            raise BenchmarkExamNotEligibleError(f"{cap_level} is not a level cap")
+
+        profile = await self._ensure_profile(user_id)
+        if level_for_exp(profile.total_exp) < cap_level:
+            raise BenchmarkExamNotEligibleError(
+                f"Level {cap_level} has not been reached yet"
+            )
+
+        if cap_level > profile.benchmark_cleared_level:
+            await self.profiles.save(
+                profile,
+                {
+                    "benchmark_cleared_level": cap_level,
+                    "level": effective_level(profile.total_exp, cap_level),
+                    "updated_at": datetime.now(UTC),
+                },
+            )
+        return await self.get_profile(user_id)
 
     def _energy_read(self, profile: UserGameProfile) -> EnergyRead:
         """Energy as of right now, regenerated lazily rather than stored."""
@@ -203,7 +256,9 @@ class GameService:
 
     async def get_skill_tree(self, user_id: str) -> SkillTreeRead:
         profile = await self._ensure_profile(user_id)
-        level = level_for_exp(profile.total_exp)
+        # Held at the Benchmark Exam cap: a skill gated on `unlock_level` past
+        # a chốt chặn must not unlock on experience alone.
+        level = effective_level(profile.total_exp, profile.benchmark_cleared_level)
         catalog = await self.catalog.list_skills()
         owned = await self.skills.owned_skill_ids(user_id)
         equipped = await self.skills.equipped_slot_by_skill_id(user_id)
@@ -288,7 +343,7 @@ class GameService:
         reason = self._lock_reason(
             skill,
             class_code=profile.class_code,
-            level=level_for_exp(profile.total_exp),
+            level=effective_level(profile.total_exp, profile.benchmark_cleared_level),
             gold=profile.gold,
             owned_codes=owned_codes,
             completed_units=await self.progress.completed_unit_ids(user_id),
@@ -397,24 +452,20 @@ class GameService:
                 kind=item.kind,
                 slot=item.slot,
                 rarity=item.rarity,
-                bonus_max_hp=item.bonus_max_hp,
-                bonus_damage_permille=item.bonus_damage_permille,
-                bonus_starting_mana=item.bonus_starting_mana,
-                bonus_defence=item.bonus_defence,
+                bonus_exp_permille=item.bonus_exp_permille,
+                bonus_gold_permille=item.bonus_gold_permille,
                 quantity=owned.quantity,
                 equipped=item.id in equipped_ids,
             )
             for owned, item in await self.items.owned(user_id)
         ]
-        # Report the capped total, so the client shows what a match will really
-        # use rather than the raw sum of the labels.
+        # Report the capped total, so the client shows what a match or lesson
+        # will really pay rather than the raw sum of the labels.
         bonus = total_bonus(
             [
-                StatBonus(
-                    max_hp=row.bonus_max_hp,
-                    damage_permille=row.bonus_damage_permille,
-                    starting_mana=row.bonus_starting_mana,
-                    defence=row.bonus_defence,
+                RewardBonus(
+                    exp_permille=row.bonus_exp_permille,
+                    gold_permille=row.bonus_gold_permille,
                 )
                 for row in rows
                 if row.equipped
@@ -422,10 +473,8 @@ class GameService:
         )
         return InventoryRead(
             items=rows,
-            bonus_max_hp=bonus.max_hp,
-            bonus_damage_permille=bonus.damage_permille,
-            bonus_starting_mana=bonus.starting_mana,
-            bonus_defence=bonus.defence,
+            bonus_exp_permille=bonus.exp_permille,
+            bonus_gold_permille=bonus.gold_permille,
         )
 
 

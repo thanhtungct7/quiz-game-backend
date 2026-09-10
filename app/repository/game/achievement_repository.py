@@ -22,7 +22,7 @@ from app.models.progress.user_challenge_progress import UserChallengeProgress
 from app.models.progress.user_lesson_progress import LessonProgressStatus, UserLessonProgress
 from app.models.pve.lesson_battle import BattleStatus, LessonBattle
 from app.services.game.achievements import AchievementMetrics
-from app.services.game.leveling import level_for_exp
+from app.services.game.leveling import effective_level
 
 
 class AchievementRepository:
@@ -156,7 +156,11 @@ class AchievementRepository:
         counts = (await self.db.execute(select(mastered, attempts, lessons, battles))).one()
 
         return AchievementMetrics(
-            level=level_for_exp(profile.total_exp) if profile is not None else 1,
+            level=(
+                effective_level(profile.total_exp, profile.benchmark_cleared_level)
+                if profile is not None
+                else 1
+            ),
             day_streak=profile.day_streak if profile is not None else 0,
             best_day_streak=profile.best_day_streak if profile is not None else 0,
             challenges_mastered=int(counts[0]),

@@ -154,3 +154,8 @@ class MonsterUnavailableError(ApplicationError):
 
 class UserNotFoundError(ApplicationError):
     """Raised when a profile is read for a user id that does not exist."""
+
+
+class BenchmarkExamNotEligibleError(ApplicationError):
+    """Raised when a Benchmark Exam result is recorded for a cap the player's
+    raw level has not reached yet, or that is not one of `cefr.LEVEL_CAPS`."""

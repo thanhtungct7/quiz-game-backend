@@ -10,7 +10,7 @@ from dataclasses import dataclass
 from app.models.duo.duo_rating import DEFAULT_RATING
 from app.models.game.user_game_profile import UserGameProfile
 from app.schemas.game.player_card import PlayerCardRead
-from app.services.game.leveling import level_for_exp
+from app.services.game.leveling import effective_level
 from app.services.game.season import tier_for_rating
 
 DEFAULT_LEVEL = 1
@@ -35,7 +35,8 @@ class PlayerStanding:
 def standing_of(profile: UserGameProfile | None, rating: int = DEFAULT_RATING) -> PlayerStanding:
     """Flatten a game profile into a standing.
 
-    Level is recomputed from `total_exp` rather than read from the cached
+    Level is recomputed from `total_exp` (held at the player's Benchmark Exam
+    cap, see `leveling.effective_level`) rather than read from the cached
     `level` column, matching `LoadoutBuilder.build` — one source of truth for
     how much experience buys a level.
     """
@@ -43,7 +44,7 @@ def standing_of(profile: UserGameProfile | None, rating: int = DEFAULT_RATING) -
         return PlayerStanding(rating=rating)
     return PlayerStanding(
         rating=rating,
-        level=level_for_exp(profile.total_exp),
+        level=effective_level(profile.total_exp, profile.benchmark_cleared_level),
         class_code=profile.class_code,
         day_streak=profile.day_streak,
     )

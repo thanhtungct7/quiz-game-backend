@@ -2,6 +2,7 @@
 
 from app.services.game.cefr import (
     BAND_FLOORS,
+    LEVEL_CAPS,
     MAX_CEFR_LEVEL,
     TOEIC_ANCHORS,
     TOEIC_CEILING,
@@ -116,3 +117,25 @@ def test_the_estimate_ceilings_before_the_level_does() -> None:
     assert toeic_estimate_for_level(cefr_floor(CefrBand.C2)) == TOEIC_CEILING
     assert toeic_estimate_for_level(MAX_CEFR_LEVEL) == TOEIC_CEILING
     assert toeic_estimate_for_level(9999) == TOEIC_CEILING
+
+
+# --- the level caps ---------------------------------------------------------
+
+
+def test_the_caps_are_the_documented_five() -> None:
+    assert LEVEL_CAPS == (10, 25, 50, 75, 92)
+
+
+def test_every_cap_sits_one_below_a_band_floor_above_a1() -> None:
+    floors = {floor for band, floor in BAND_FLOORS if band is not CefrBand.A1}
+    assert {cap + 1 for cap in LEVEL_CAPS} == floors
+
+
+def test_a1_has_no_cap_of_its_own() -> None:
+    """A1 is where every account starts; nothing gates entry to the ladder
+    itself, only the climb past it."""
+    assert cefr_floor(CefrBand.A1) - 1 not in LEVEL_CAPS
+
+
+def test_the_caps_are_sorted_ascending() -> None:
+    assert list(LEVEL_CAPS) == sorted(LEVEL_CAPS)

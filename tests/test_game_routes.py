@@ -13,8 +13,10 @@ from app.models.game.season import GameSeason, SeasonRating
 from app.models.game.skill import Skill
 from app.models.game.user_game_profile import UserGameProfile
 from app.services.game.catalog import CLASSES, ITEMS, SKILLS, ULTIMATES, WARRIOR
+from app.services.game.cefr import LEVEL_CAPS
 from app.services.game.energy import MAX_ENERGY
 from app.services.game.game_service import CLASS_CHANGE_GOLD, GameService
+from app.services.game.leveling import exp_for_level
 
 ULTIMATE_UNIT_ID = "unit-1"
 
@@ -311,6 +313,7 @@ def _profile(
     class_code: str | None = None,
     energy: int = MAX_ENERGY,
     day_streak: int = 0,
+    benchmark_cleared_level: int = 0,
 ) -> UserGameProfile:
     """A profile as it comes back from the database: every column spelled out,
     because constructing the model outside a session skips the defaults."""
@@ -326,6 +329,7 @@ def _profile(
         day_streak=day_streak,
         best_day_streak=day_streak,
         last_active_date=None,
+        benchmark_cleared_level=benchmark_cleared_level,
     )
 
 
@@ -338,10 +342,8 @@ def _items() -> list[GameItem]:
             kind=spec.kind,
             slot=spec.slot,
             rarity=spec.rarity,
-            bonus_max_hp=spec.bonus_max_hp,
-            bonus_damage_permille=spec.bonus_damage_permille,
-            bonus_starting_mana=spec.bonus_starting_mana,
-            bonus_defence=spec.bonus_defence,
+            bonus_exp_permille=spec.bonus_exp_permille,
+            bonus_gold_permille=spec.bonus_gold_permille,
             is_active=True,
         )
         for spec in ITEMS
@@ -403,6 +405,86 @@ async def test_the_profile_requires_authentication() -> None:
         response = await client.get("/api/v1/game/profile")
 
     assert response.status_code == 401
+
+
+# --- benchmark exam ----------------------------------------------------------
+
+
+async def test_a_level_past_the_first_cap_is_held_back() -> None:
+    cap = LEVEL_CAPS[0]
+    harness = Harness(profile=_profile(total_exp=exp_for_level(cap + 5)))
+
+    body = (await harness.request("GET", "/profile")).json()
+
+    assert body["level"] == cap
+    assert body["pending_benchmark_level"] == cap
+
+
+async def test_nothing_is_pending_before_experience_reaches_the_cap() -> None:
+    cap = LEVEL_CAPS[0]
+    harness = Harness(profile=_profile(total_exp=exp_for_level(cap - 1)))
+
+    body = (await harness.request("GET", "/profile")).json()
+
+    assert body["level"] == cap - 1
+    assert body["pending_benchmark_level"] is None
+
+
+async def test_passing_the_benchmark_exam_releases_the_level() -> None:
+    cap = LEVEL_CAPS[0]
+    harness = Harness(profile=_profile(total_exp=exp_for_level(cap + 5)))
+
+    response = await harness.request("POST", "/benchmark-exam", {"cap_level": cap})
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["level"] == cap + 5
+    assert body["pending_benchmark_level"] is None
+
+
+async def test_the_exam_cannot_be_passed_before_the_level_is_reached() -> None:
+    cap = LEVEL_CAPS[0]
+    harness = Harness(profile=_profile(total_exp=exp_for_level(cap - 1)))
+
+    response = await harness.request("POST", "/benchmark-exam", {"cap_level": cap})
+
+    assert response.status_code == 400
+
+
+async def test_an_unknown_cap_level_is_a_400() -> None:
+    harness = Harness(profile=_profile(total_exp=exp_for_level(99)))
+
+    response = await harness.request("POST", "/benchmark-exam", {"cap_level": 11})
+
+    assert response.status_code == 400
+
+
+async def test_passing_a_cap_again_is_a_no_op_not_an_error() -> None:
+    cap = LEVEL_CAPS[0]
+    harness = Harness(
+        profile=_profile(total_exp=exp_for_level(cap + 5), benchmark_cleared_level=cap)
+    )
+
+    response = await harness.request("POST", "/benchmark-exam", {"cap_level": cap})
+
+    assert response.status_code == 200
+    assert response.json()["level"] == cap + 5
+
+
+async def test_passing_a_later_cap_also_clears_every_cap_below_it() -> None:
+    # Sitting the level-25 Benchmark Exam implies the level-10 one is behind
+    # the player too -- `benchmark_cleared_level` is a single high-water mark,
+    # not a set of individually-held caps.
+    second_cap = LEVEL_CAPS[1]
+    harness = Harness(profile=_profile(total_exp=exp_for_level(second_cap + 3)))
+
+    response = await harness.request(
+        "POST", "/benchmark-exam", {"cap_level": second_cap}
+    )
+
+    assert response.status_code == 200
+    assert response.json()["level"] == second_cap + 3
+    assert harness.profiles.profile.benchmark_cleared_level == second_cap
 
 
 # --- classes ---------------------------------------------------------------
@@ -725,8 +807,8 @@ async def test_an_empty_inventory_reports_no_bonus() -> None:
     body = (await harness.request("GET", "/items")).json()
 
     assert body["items"] == []
-    assert body["bonus_max_hp"] == 0
-    assert body["bonus_damage_permille"] == 0
+    assert body["bonus_exp_permille"] == 0
+    assert body["bonus_gold_permille"] == 0
 
 
 async def test_owned_items_are_listed_with_their_counts() -> None:
@@ -749,7 +831,7 @@ async def test_equipping_an_item_counts_toward_the_bonus() -> None:
 
     assert response.status_code == 200
     body = response.json()
-    assert body["bonus_max_hp"] == 8
+    assert body["bonus_exp_permille"] == 45
     assert next(r for r in body["items"] if r["code"] == "CHAIN_MAIL")["equipped"] is True
 
 
@@ -763,8 +845,8 @@ async def test_the_reported_bonus_is_the_capped_one() -> None:
 
     body = (await harness.request("GET", "/items")).json()
 
-    assert body["bonus_max_hp"] <= 20
-    assert body["bonus_damage_permille"] <= 150
+    assert body["bonus_exp_permille"] <= 150
+    assert body["bonus_gold_permille"] <= 150
 
 
 async def test_equipping_an_item_you_do_not_own_is_a_400() -> None:
@@ -797,7 +879,7 @@ async def test_clearing_a_slot_removes_the_bonus() -> None:
 
     body = (await harness.request("PUT", "/equipment", {})).json()
 
-    assert body["bonus_max_hp"] == 0
+    assert body["bonus_exp_permille"] == 0
 
 
 # --- season ----------------------------------------------------------------

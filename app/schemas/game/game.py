@@ -35,6 +35,10 @@ class GameProfileRead(BaseModel):
     energy: EnergyRead
     day_streak: int
     best_day_streak: int
+    # The chốt chặn năng lực `level` is being held at, or None once experience
+    # alone would not carry the player past it anyway. A client shows the
+    # Benchmark Exam prompt exactly when this is not null.
+    pending_benchmark_level: int | None
 
 
 class GameClassRead(BaseModel):
@@ -94,6 +98,17 @@ class ChooseClassRequest(BaseModel):
     class_code: str = Field(min_length=1, max_length=32)
 
 
+class BenchmarkExamResultRequest(BaseModel):
+    """A pass on the Benchmark Exam bound to one chốt chặn năng lực.
+
+    `cap_level` must be one of `cefr.LEVEL_CAPS` and one the player's raw
+    level has already reached -- `GameService.record_benchmark_pass` is what
+    actually checks both, this is only the shape of the request.
+    """
+
+    cap_level: int = Field(gt=0)
+
+
 class LoadoutRequest(BaseModel):
     # Fewer than three is allowed; the empty list clears the bar.
     skill_ids: list[str] = Field(default_factory=list, max_length=LOADOUT_SLOTS)
@@ -119,21 +134,18 @@ class ItemRead(BaseModel):
     kind: ItemKind
     slot: EquipmentSlot | None
     rarity: ItemRarity
-    bonus_max_hp: int
-    bonus_damage_permille: int
-    bonus_starting_mana: int
-    bonus_defence: int
+    bonus_exp_permille: int
+    bonus_gold_permille: int
     quantity: int
     equipped: bool
 
 
 class InventoryRead(BaseModel):
     items: list[ItemRead]
-    # Already capped by `loot.total_bonus`, so this is what a match will use.
-    bonus_max_hp: int
-    bonus_damage_permille: int
-    bonus_starting_mana: int
-    bonus_defence: int
+    # Already capped by `loot.total_bonus`, so this is what the next match or
+    # lesson will actually pay.
+    bonus_exp_permille: int
+    bonus_gold_permille: int
 
 
 

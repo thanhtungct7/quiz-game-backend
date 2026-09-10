@@ -5,6 +5,7 @@ from app.api.routes.game._game_errors import raise_game_http_error
 from app.core.exceptions import ApplicationError
 from app.models.game.game_item import EquipmentSlot
 from app.schemas.game.game import (
+    BenchmarkExamResultRequest,
     ChooseClassRequest,
     EquipmentRequest,
     GameClassRead,
@@ -26,6 +27,23 @@ async def get_my_game_profile(
     service: GameServiceDependency,
 ) -> GameProfileRead:
     return await service.get_profile(current_user.id)
+
+
+@router.post("/benchmark-exam", response_model=GameProfileRead)
+async def record_benchmark_pass(
+    payload: BenchmarkExamResultRequest,
+    current_user: CurrentUser,
+    service: GameServiceDependency,
+) -> GameProfileRead:
+    """Record a pass on the Benchmark Exam bound to one level cap.
+
+    Grading the exam itself lives wherever its questions do -- this endpoint
+    only ever receives the verdict and lifts the cap it names.
+    """
+    try:
+        return await service.record_benchmark_pass(current_user.id, payload.cap_level)
+    except ApplicationError as exc:
+        raise_game_http_error(exc)
 
 
 @router.get("/classes", response_model=list[GameClassRead])

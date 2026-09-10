@@ -30,7 +30,15 @@ class UserGameProfile(Base):
         ForeignKey("users.id", ondelete="CASCADE"), nullable=False, unique=True, index=True
     )
     total_exp: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
+    # `level` is capped at `leveling.next_level_cap(benchmark_cleared_level)`:
+    # see `leveling.effective_level`, the one function allowed to compute it.
     level: Mapped[int] = mapped_column(Integer, nullable=False, default=1, server_default="1")
+    # The highest chốt chặn năng lực (`cefr.LEVEL_CAPS`) this player has
+    # cleared a Benchmark Exam for. Monotonic -- only ever raised, and only to
+    # a value already in `LEVEL_CAPS` -- so `next_level_cap` always advances.
+    benchmark_cleared_level: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0, server_default="0"
+    )
     gold: Mapped[int] = mapped_column(
         Integer, nullable=False, default=STARTING_GOLD, server_default=str(STARTING_GOLD)
     )
