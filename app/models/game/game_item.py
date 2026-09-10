@@ -29,9 +29,15 @@ class ItemRarity(StrEnum):
 class GameItem(Base):
     """Something a chest can drop.
 
-    An EQUIPMENT item moves exactly the four numbers a class moves. SKIN and
-    CARD items are cosmetic and collectible and carry no bonus at all, which
-    keeps the reward table interesting without letting it decide fights.
+    Deliberately not a stat block any more. An EQUIPMENT item used to move the
+    same four numbers a class moves -- HP, damage, mana, defence -- which is
+    exactly the "cày đồ" pay-to-win loop the EdTech redesign removes: gear
+    must flavour a collection, never buy a match. What it moves now is two
+    EdTech buffs, `bonus_exp_permille` and `bonus_gold_permille`, applied to a
+    match or lesson's payout in `settlement.GameSettlementService`, never to
+    `combat.resolve_blow`. SKIN and CARD items are cosmetic and collectible
+    and carry no bonus at all, which keeps the reward table interesting
+    without letting it decide a payout either.
     """
 
     __tablename__ = "game_items"
@@ -47,18 +53,12 @@ class GameItem(Base):
     rarity: Mapped[ItemRarity] = mapped_column(
         Enum(ItemRarity, name="item_rarity"), nullable=False
     )
-    bonus_max_hp: Mapped[int] = mapped_column(
+    # Thousandths, same convention as `damage_permille` used to be: 150 means
+    # +15% on top of whatever a match or lesson would otherwise have paid.
+    bonus_exp_permille: Mapped[int] = mapped_column(
         Integer, nullable=False, default=0, server_default="0"
     )
-    bonus_damage_permille: Mapped[int] = mapped_column(
-        Integer, nullable=False, default=0, server_default="0"
-    )
-    bonus_starting_mana: Mapped[int] = mapped_column(
-        Integer, nullable=False, default=0, server_default="0"
-    )
-    # Flat damage taken off each incoming blow. Only armour carries it, so the
-    # three equipment slots stay three different decisions.
-    bonus_defence: Mapped[int] = mapped_column(
+    bonus_gold_permille: Mapped[int] = mapped_column(
         Integer, nullable=False, default=0, server_default="0"
     )
     image_src: Mapped[str | None] = mapped_column(String(255), nullable=True)

@@ -184,9 +184,10 @@ def monster_attack(
     them: the percentage shield first, then flat DEF off what is left.
 
     Monsters hit for single digits, so a point of DEF is worth much more here
-    than it is in duo. That is the intended shape -- gear and a class are meant
-    to make the learn path easier -- and it is why `loot.MAX_BONUS_DEFENCE` is
-    tight enough that the weakest monster in the catalog still gets through.
+    than it is in duo. `defender_flat_reduction` comes from the class alone now
+    -- equipment moved to `loot.RewardBonus` and no longer touches combat --
+    which is what keeps even a heavily-armoured class letting the weakest
+    monster in the catalog through for something.
     """
     enraged = is_enraged(elapsed_seconds, monster)
     raw = max(0, monster.attack_damage)

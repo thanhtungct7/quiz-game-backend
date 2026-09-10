@@ -165,7 +165,6 @@ class DatabaseBattlePersistence:
                 profiles=GameProfileRepository(db),
                 catalog=CatalogRepository(db),
                 skills=UserSkillRepository(db),
-                items=ItemRepository(db),
             ).build(user_id)
 
             return BattleSetup(

@@ -1,15 +1,20 @@
 """The four numbers a profile card shows, and where each one came from.
 
-This is the arithmetic that turns a stored build -- a class, three equipment
-slots and a daily streak -- into HP, ATK, DEF and MANA. It lives here rather
-than inside `LoadoutBuilder` because two callers need it and only one of them
-may touch the database: a match resolves a build in order to fight with it, and
-a profile screen resolves the same build in order to draw it. Both read this,
-so the numbers on the card are the numbers in the fight by construction rather
-than by two implementations agreeing.
+This is the arithmetic that turns a stored build -- a class and a daily streak
+-- into HP, ATK, DEF and MANA. It lives here rather than inside
+`LoadoutBuilder` because two callers need it and only one of them may touch the
+database: a match resolves a build in order to fight with it, and a profile
+screen resolves the same build in order to draw it. Both read this, so the
+numbers on the card are the numbers in the fight by construction rather than by
+two implementations agreeing.
+
+Equipment is deliberately not one of the inputs. It used to move these same
+four numbers; the EdTech redesign moved that lever to `loot.RewardBonus`
+instead, a percentage on a match or lesson's EXP/Gold payout rather than on
+its odds of being won, so nothing here can be bought.
 
 Pure functions with no I/O, in the same shape as `combat.py` and `loot.py`. The
-ORM rows are mapped to [ClassPart] and [ItemPart] by whoever loaded them.
+ORM row is mapped to [ClassPart] by whoever loaded it.
 
 ATK is the one number that is not stored as itself. The engine scales damage by
 `damage_permille`, a multiplier in thousandths, which is exact and comparable
@@ -18,19 +23,11 @@ answer actually deals -- `MAX_DAMAGE` put through the multiplier -- which is a
 number a player can hold against the HP number next to it.
 """
 
-from collections.abc import Sequence
 from dataclasses import dataclass
 from enum import StrEnum
 
 from app.models.game.game_class import GameClass
-from app.models.game.game_item import GameItem
 from app.services.game.combat import MAX_DAMAGE, MAX_HP, PERMILLE_ONE, streak_buff
-from app.services.game.loot import (
-    MAX_BONUS_DAMAGE_PERMILLE,
-    MAX_BONUS_DEFENCE,
-    MAX_BONUS_HP,
-    MAX_BONUS_STARTING_MANA,
-)
 
 
 def attack_for(damage_permille: int) -> int:
@@ -59,7 +56,6 @@ class CombatStats:
 
 class StatSourceKind(StrEnum):
     CLASS = "CLASS"
-    EQUIPMENT = "EQUIPMENT"
     STREAK = "STREAK"
 
 
@@ -92,18 +88,6 @@ class ClassPart:
     defence: int
 
 
-@dataclass(frozen=True)
-class ItemPart:
-    """An equipped item, reduced to what it adds."""
-
-    code: str
-    name: str
-    bonus_max_hp: int = 0
-    bonus_damage_permille: int = 0
-    bonus_starting_mana: int = 0
-    bonus_defence: int = 0
-
-
 def class_part(row: GameClass) -> ClassPart:
     """A catalog row as this module reads it.
 
@@ -117,18 +101,6 @@ def class_part(row: GameClass) -> ClassPart:
         damage_permille=row.damage_permille,
         starting_mana=row.starting_mana,
         defence=row.defence,
-    )
-
-
-def item_part(row: GameItem) -> ItemPart:
-    """An equipped item as this module reads it. See [class_part]."""
-    return ItemPart(
-        code=row.code,
-        name=row.name,
-        bonus_max_hp=row.bonus_max_hp,
-        bonus_damage_permille=row.bonus_damage_permille,
-        bonus_starting_mana=row.bonus_starting_mana,
-        bonus_defence=row.bonus_defence,
     )
 
 
@@ -164,26 +136,9 @@ STREAK_LABEL = "Chuỗi ngày"
 def resolve(
     *,
     base: ClassPart | None,
-    equipment: Sequence[ItemPart] = (),
     day_streak: int = 0,
 ) -> Build:
-    """Add a build up, and record what each part of it was worth.
-
-    Two things here are more careful than they look.
-
-    The equipment ceilings in `loot` cap the *total*, not each item, so a player
-    wearing more than the cap allows has a total that is smaller than the sum of
-    the labels on their gear. Attributing that back per item is done greedily in
-    the order given: the first item is worth its full label, and the cap eats
-    whatever the last one would have added. Any other split would be arbitrary,
-    and leaving it unattributed would mean a breakdown that does not add up.
-
-    ATK is attributed as a running difference rather than converted per item.
-    `attack_for` rounds, so converting each item's multiplier on its own and
-    summing would drift away from the converted total by a point or two. Taking
-    the difference of the running conversion cannot: every line is exactly what
-    that item changed the displayed number by.
-    """
+    """Add a build up, and record what each part of it was worth."""
     origin = base or ClassPart(
         code="",
         name=BASELINE_LABEL,
@@ -210,34 +165,6 @@ def resolve(
         )
     ]
 
-    worn = list(equipment)
-    hp_share = _attribute([item.bonus_max_hp for item in worn], MAX_BONUS_HP)
-    atk_share = _attribute(
-        [item.bonus_damage_permille for item in worn], MAX_BONUS_DAMAGE_PERMILLE
-    )
-    mana_share = _attribute(
-        [item.bonus_starting_mana for item in worn], MAX_BONUS_STARTING_MANA
-    )
-    def_share = _attribute([item.bonus_defence for item in worn], MAX_BONUS_DEFENCE)
-
-    for index, item in enumerate(worn):
-        before = attack_for(permille)
-        permille += atk_share[index]
-        hp += hp_share[index]
-        mana += mana_share[index]
-        defence += def_share[index]
-        sources.append(
-            StatSource(
-                kind=StatSourceKind.EQUIPMENT,
-                code=item.code,
-                label=item.name,
-                hp=hp_share[index],
-                atk=attack_for(permille) - before,
-                defence=def_share[index],
-                mana=mana_share[index],
-            )
-        )
-
     buff = streak_buff(day_streak)
     if buff.bonus_max_hp or buff.bonus_starting_mana:
         hp += buff.bonus_max_hp
@@ -263,19 +190,3 @@ def resolve(
         defence=defence,
         sources=tuple(sources),
     )
-
-
-def _attribute(values: Sequence[int], ceiling: int) -> list[int]:
-    """Split a capped total back over the items that earned it, in order.
-
-    Sums to exactly what `loot.total_bonus` would have produced for the same
-    list -- both are `min(sum, ceiling)` -- so a breakdown and a fight can never
-    disagree about how much gear was worth.
-    """
-    taken: list[int] = []
-    used = 0
-    for value in values:
-        share = max(0, min(max(0, value), ceiling - used))
-        taken.append(share)
-        used += share
-    return taken

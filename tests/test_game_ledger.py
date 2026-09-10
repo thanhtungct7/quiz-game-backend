@@ -247,13 +247,24 @@ async def test_a_level_up_is_reported() -> None:
 
 
 class FakeItemRepository:
-    def __init__(self, items: list[GameItem] | None = None) -> None:
+    def __init__(
+        self,
+        items: list[GameItem] | None = None,
+        *,
+        worn: list[GameItem] | None = None,
+    ) -> None:
         self.items = items if items is not None else [_item("SWORD"), _item("SHIELD")]
+        # Nobody has anything equipped by default, so a reward bonus test opts
+        # in explicitly rather than every other test silently gaining one.
+        self.worn = worn if worn is not None else []
         self.claims: list[tuple[str, str, str | None]] = []
         self.inventory: list[tuple[str, str]] = []
 
     async def list_items(self) -> list[GameItem]:
         return self.items
+
+    async def equipment(self, user_id: str) -> list[tuple[object, GameItem]]:
+        return [(None, item) for item in self.worn]
 
     async def claim_loot(self, user_id: str, ref_id: str, item_id: str | None) -> bool:
         if any(claim[:2] == (user_id, ref_id) for claim in self.claims):
@@ -326,9 +337,8 @@ def _item(code: str) -> GameItem:
         kind=ItemKind.EQUIPMENT,
         slot=EquipmentSlot.WEAPON,
         rarity=ItemRarity.COMMON,
-        bonus_max_hp=0,
-        bonus_damage_permille=10,
-        bonus_starting_mana=0,
+        bonus_exp_permille=0,
+        bonus_gold_permille=0,
         is_active=True,
     )
 

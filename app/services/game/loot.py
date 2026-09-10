@@ -1,15 +1,15 @@
-"""Rolling a reward chest after a match.
+"""Rolling a reward chest after a match, and what equipping its contents buys.
 
 Pure functions with no I/O. The random source is injected rather than taken
 from the module, so a seeded `Random` makes every distribution here testable --
 the same reason `QuizService` takes its own RNG.
 
-Items only ever move the same numbers a class moves: maximum health, the damage
-multiplier, starting mana and defence. That is a hard design rule, not a current
-limitation -- but the rule is about *branches*, not about how many numbers there
-are. Defence was added as a fourth knob precisely because `resolve_blow` already
-took a `defender_flat_reduction` and needed no new branch to read it. An item
-that wanted something the engine cannot already resolve is still refused.
+Items no longer move a combat number -- that loop (`resolve_blow`'s
+`attacker_damage_permille`/`defender_flat_reduction`) reads only class and
+streak now, see `combat_stats.resolve`. What equipping an item buys is a
+percentage on top of what a match or lesson pays out in EXP and Gold, applied
+in `settlement.GameSettlementService`. An item that wanted something the
+settlement layer cannot already resolve is still refused.
 """
 
 from dataclasses import dataclass
@@ -32,16 +32,12 @@ WIN_RARITY_WEIGHTS: dict[ItemRarity, int] = {
     ItemRarity.LEGENDARY: 3,
 }
 
-# Ceilings on what all three equipment slots can add together. Deliberately
-# small: equipment is meant to flavour a build, not to decide a match before
-# the first question.
-MAX_BONUS_HP = 20
-MAX_BONUS_DAMAGE_PERMILLE = 150
-MAX_BONUS_STARTING_MANA = 15
-# Tighter than it looks, and deliberately so: defence is subtracted flat, and
-# the weakest monster in the catalog swings for 8. A warrior in full armour
-# stands at 3 + 2, which still lets a slime through for 3.
-MAX_BONUS_DEFENCE = 2
+# Ceilings on what all three equipment slots can add together, in thousandths
+# (150 = +15%). Deliberately small: a full loadout should feel like a
+# meaningful head start on grinding XP and Gold, never like the difference
+# between passing and failing a lesson or a match.
+MAX_BONUS_EXP_PERMILLE = 150
+MAX_BONUS_GOLD_PERMILLE = 150
 
 
 @dataclass(frozen=True)
@@ -55,19 +51,17 @@ class ItemDrop:
 
 
 @dataclass(frozen=True)
-class StatBonus:
-    max_hp: int = 0
-    damage_permille: int = 0
-    starting_mana: int = 0
-    defence: int = 0
+class RewardBonus:
+    """The EdTech buff a piece of equipment (or a whole loadout) is worth."""
 
-    def capped(self) -> "StatBonus":
+    exp_permille: int = 0
+    gold_permille: int = 0
+
+    def capped(self) -> "RewardBonus":
         """The same bonus, clamped to what equipment is allowed to contribute."""
-        return StatBonus(
-            max_hp=_clamp(self.max_hp, MAX_BONUS_HP),
-            damage_permille=_clamp(self.damage_permille, MAX_BONUS_DAMAGE_PERMILLE),
-            starting_mana=_clamp(self.starting_mana, MAX_BONUS_STARTING_MANA),
-            defence=_clamp(self.defence, MAX_BONUS_DEFENCE),
+        return RewardBonus(
+            exp_permille=_clamp(self.exp_permille, MAX_BONUS_EXP_PERMILLE),
+            gold_permille=_clamp(self.gold_permille, MAX_BONUS_GOLD_PERMILLE),
         )
 
 
@@ -94,12 +88,19 @@ def roll_item(rng: Random, pool: list[ItemDrop], *, won: bool) -> ItemDrop | Non
     return rng.choice(candidates)
 
 
-def total_bonus(bonuses: list[StatBonus]) -> StatBonus:
+def total_bonus(bonuses: list[RewardBonus]) -> RewardBonus:
     """Add up equipped items, then apply the ceilings."""
-    return StatBonus(
-        max_hp=sum(bonus.max_hp for bonus in bonuses),
-        damage_permille=sum(bonus.damage_permille for bonus in bonuses),
-        starting_mana=sum(bonus.starting_mana for bonus in bonuses),
-        defence=sum(bonus.defence for bonus in bonuses),
+    return RewardBonus(
+        exp_permille=sum(bonus.exp_permille for bonus in bonuses),
+        gold_permille=sum(bonus.gold_permille for bonus in bonuses),
     ).capped()
+
+
+def apply_bonus(amount: int, permille: int) -> int:
+    """`amount` plus its share of `permille`, never touching a non-positive
+    amount: a bonus is a reward for owning gear, not a way to shrink a
+    forfeit penalty or amplify a loss."""
+    if amount <= 0:
+        return amount
+    return amount + amount * max(0, permille) // 1000
 

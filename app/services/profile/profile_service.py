@@ -20,7 +20,6 @@ from app.models.duo.duo_rating import DEFAULT_RATING, DuoRating
 from app.models.game.achievement import Achievement, UserAchievement
 from app.models.game.user_game_profile import UserGameProfile
 from app.repository.game.catalog_repository import CatalogRepository
-from app.repository.game.item_repository import ItemRepository
 from app.repository.profile.profile_stats_repository import (
     LearningTotals,
     ProfileStatsRepository,
@@ -46,9 +45,9 @@ from app.services.game.cefr import (
     next_cefr_at_level,
     toeic_estimate_for_level,
 )
-from app.services.game.combat_stats import Build, ClassPart, class_part, item_part, resolve
+from app.services.game.combat_stats import Build, ClassPart, class_part, resolve
 from app.services.game.energy import MAX_ENERGY, current_energy, next_regen_at
-from app.services.game.leveling import exp_for_level, exp_to_next_level, level_for_exp
+from app.services.game.leveling import effective_level, exp_for_level, exp_to_next_level
 from app.services.game.season import tier_for_rating
 
 # How many badges the overview tab has room for. The most recent ones, because
@@ -67,16 +66,14 @@ class ProfileService:
         *,
         stats: ProfileStatsRepository,
         catalog: CatalogRepository,
-        items: ItemRepository,
         achievements: AchievementService,
         config: Settings,
     ) -> None:
         self.stats = stats
-        # The same two repositories a match reads its build from. Borrowed
-        # rather than reimplemented: a card that showed different numbers to
-        # the ones the engine fights on would be worse than showing none.
+        # The same repository a match reads its class from. Borrowed rather
+        # than reimplemented: a card that showed different numbers to the ones
+        # the engine fights on would be worse than showing none.
         self.catalog = catalog
-        self.items = items
         self.achievements = achievements
         self.config = config
 
@@ -229,15 +226,7 @@ class ProfileService:
             if class_row is not None and class_row.is_active:
                 base = class_part(class_row)
 
-        return resolve(
-            base=base,
-            equipment=[
-                item_part(item)
-                for _worn, item in await self.items.equipment(profile.user_id)
-                if item.is_active
-            ],
-            day_streak=profile.day_streak,
-        )
+        return resolve(base=base, day_streak=profile.day_streak)
 
 
 def _achievement_read(row: Achievement, unlocked: UserAchievement) -> AchievementRead:
@@ -329,7 +318,11 @@ def _public_read(
     config: Settings,
 ) -> PublicProfileRead:
     """The half of a profile anyone may see."""
-    level = level_for_exp(profile.total_exp) if profile is not None else 1
+    level = (
+        effective_level(profile.total_exp, profile.benchmark_cleared_level)
+        if profile is not None
+        else 1
+    )
     return PublicProfileRead(
         id=user.id,
         username=user.username,

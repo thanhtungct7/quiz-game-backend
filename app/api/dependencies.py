@@ -224,19 +224,18 @@ def get_game_service(db: DatabaseSession) -> GameService:
 
 
 def get_profile_service(db: DatabaseSession) -> ProfileService:
-    """Three repositories, not the eight `GameService` needs: an aggregated
+    """Two repositories, not the eight `GameService` needs: an aggregated
     profile is a read across a fixed set of tables, and pulling in the other
     services would drag their write paths along with them.
 
-    The catalog and item repositories are here for the combat stat block, and
-    are the same two a match resolves its build from. Repositories rather than
+    The catalog repository is here for the combat stat block, and is the same
+    one a match resolves its class from. A repository rather than
     `GameService` or `LoadoutBuilder` on purpose -- both of those write, and
     this endpoint must not.
     """
     return ProfileService(
         stats=ProfileStatsRepository(db),
         catalog=CatalogRepository(db),
-        items=ItemRepository(db),
         achievements=AchievementService(AchievementRepository(db)),
         config=settings,
     )

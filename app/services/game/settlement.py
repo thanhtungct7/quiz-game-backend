@@ -20,8 +20,8 @@ from app.repository.game.item_repository import ItemRepository
 from app.repository.game.season_repository import SeasonRepository
 from app.services.duo.scoring import MatchOutcome
 from app.services.game.achievement_service import AchievementService
-from app.services.game.leveling import apply_exp, level_for_exp
-from app.services.game.loot import ItemDrop, roll_item
+from app.services.game.leveling import apply_exp, effective_level
+from app.services.game.loot import ItemDrop, RewardBonus, apply_bonus, roll_item, total_bonus
 from app.services.game.rewards import RewardInput, compute_reward
 from app.services.game.season import RankTier, tier_for_rating
 from app.services.game.season_service import ensure_active_season, opening_rating
@@ -172,11 +172,14 @@ class GameSettlementService:
         gold_before = profile.gold
 
         reward = compute_reward(data)
-        gold_after = max(0, gold_before + reward.gold_delta)
+        bonus = await self._reward_bonus(user_id)
+        exp_delta = apply_bonus(reward.exp_delta, bonus.exp_permille)
+        gold_delta = apply_bonus(reward.gold_delta, bonus.gold_permille)
+        gold_after = max(0, gold_before + gold_delta)
 
         granted = await self.ledger.grant(
             user_id=user_id,
-            amount=reward.gold_delta,
+            amount=gold_delta,
             reason=_REASON_BY_OUTCOME[data.outcome],
             ref_id=match_id,
             balance_after=gold_after,
@@ -189,10 +192,8 @@ class GameSettlementService:
                 gold=GoldAward(gold_before, gold_before),
             )
 
-        exp_after = apply_exp(
-            exp_before, reward.exp_delta, floor_at_current_level=True
-        )
-        level_after = level_for_exp(exp_after)
+        exp_after = apply_exp(exp_before, exp_delta, floor_at_current_level=True)
+        level_after = effective_level(exp_after, profile.benchmark_cleared_level)
         await self.profiles.save(
             profile,
             {
@@ -245,17 +246,21 @@ class GameSettlementService:
         level_before = profile.level
         gold_before = profile.gold
 
+        bonus = await self._reward_bonus(user_id)
+        first_clear_gold = apply_bonus(payout.first_clear_gold, bonus.gold_permille)
         first_clear = await self.ledger.grant(
             user_id=user_id,
-            amount=payout.first_clear_gold,
+            amount=first_clear_gold,
             reason=GoldReason.BATTLE_WIN,
             ref_id=lesson_id,
-            balance_after=gold_before + payout.first_clear_gold,
+            balance_after=gold_before + first_clear_gold,
         )
         if first_clear:
-            exp_delta, gold_delta = payout.first_clear_exp, payout.first_clear_gold
+            exp_delta = apply_bonus(payout.first_clear_exp, bonus.exp_permille)
+            gold_delta = first_clear_gold
         else:
-            exp_delta, gold_delta = payout.replay_exp, payout.replay_gold
+            exp_delta = apply_bonus(payout.replay_exp, bonus.exp_permille)
+            gold_delta = apply_bonus(payout.replay_gold, bonus.gold_permille)
             replayed = await self.ledger.grant(
                 user_id=user_id,
                 amount=gold_delta,
@@ -274,7 +279,7 @@ class GameSettlementService:
 
         gold_after = max(0, gold_before + gold_delta)
         exp_after = apply_exp(exp_before, exp_delta, floor_at_current_level=True)
-        level_after = level_for_exp(exp_after)
+        level_after = effective_level(exp_after, profile.benchmark_cleared_level)
         await self.profiles.save(
             profile,
             {
@@ -331,6 +336,27 @@ class GameSettlementService:
             },
         )
         return StreakChange(day_streak=streak, best_day_streak=best, extended=extended)
+
+    async def _reward_bonus(self, user_id: str) -> RewardBonus:
+        """The equipped EdTech buff: %EXP and %Gold on top of a payout.
+
+        The one place equipment still moves a number. It never reaches
+        `combat.resolve_blow` any more -- see `combat_stats.resolve` -- so a
+        loadout can only ever grow the reward for a match already won, never
+        the odds of winning it.
+        """
+        if self.items is None:
+            return RewardBonus()
+        return total_bonus(
+            [
+                RewardBonus(
+                    exp_permille=item.bonus_exp_permille,
+                    gold_permille=item.bonus_gold_permille,
+                )
+                for _worn, item in await self.items.equipment(user_id)
+                if item.is_active
+            ]
+        )
 
     async def _roll_chest(
         self, user_id: str, match_id: str, *, won: bool

@@ -3,13 +3,13 @@ from random import Random
 
 from app.models.game.game_item import ItemRarity
 from app.services.game.loot import (
-    MAX_BONUS_DAMAGE_PERMILLE,
-    MAX_BONUS_HP,
-    MAX_BONUS_STARTING_MANA,
+    MAX_BONUS_EXP_PERMILLE,
+    MAX_BONUS_GOLD_PERMILLE,
     RARITY_WEIGHTS,
     WIN_RARITY_WEIGHTS,
     ItemDrop,
-    StatBonus,
+    RewardBonus,
+    apply_bonus,
     roll_item,
     roll_rarity,
     total_bonus,
@@ -81,27 +81,39 @@ def test_a_missing_rarity_falls_back_rather_than_dropping_nothing() -> None:
 def test_bonuses_add_up_across_slots() -> None:
     total = total_bonus(
         [
-            StatBonus(max_hp=5, damage_permille=20, starting_mana=3),
-            StatBonus(max_hp=6, damage_permille=30, starting_mana=4),
+            RewardBonus(exp_permille=20, gold_permille=10),
+            RewardBonus(exp_permille=30, gold_permille=15),
         ]
     )
-    assert total == StatBonus(max_hp=11, damage_permille=50, starting_mana=7)
+    assert total == RewardBonus(exp_permille=50, gold_permille=25)
 
 
 def test_the_combined_bonus_is_capped() -> None:
-    huge = StatBonus(max_hp=500, damage_permille=5000, starting_mana=500)
+    huge = RewardBonus(exp_permille=5000, gold_permille=5000)
     total = total_bonus([huge, huge, huge])
-    assert total.max_hp == MAX_BONUS_HP
-    assert total.damage_permille == MAX_BONUS_DAMAGE_PERMILLE
-    assert total.starting_mana == MAX_BONUS_STARTING_MANA
+    assert total.exp_permille == MAX_BONUS_EXP_PERMILLE
+    assert total.gold_permille == MAX_BONUS_GOLD_PERMILLE
 
 
-def test_a_negative_bonus_cannot_weaken_a_player() -> None:
-    total = total_bonus([StatBonus(max_hp=-50, damage_permille=-900, starting_mana=-9)])
-    assert total == StatBonus(max_hp=0, damage_permille=0, starting_mana=0)
+def test_a_negative_bonus_cannot_weaken_a_reward() -> None:
+    total = total_bonus([RewardBonus(exp_permille=-900, gold_permille=-900)])
+    assert total == RewardBonus(exp_permille=0, gold_permille=0)
 
 
 def test_equipment_stays_a_flavour_not_a_decision() -> None:
-    # The whole equipment set may not add more than a fifth of a health bar.
-    assert MAX_BONUS_HP <= 20
-    assert MAX_BONUS_DAMAGE_PERMILLE <= 150
+    # The whole equipment set may not add more than 15% to either payout.
+    assert MAX_BONUS_EXP_PERMILLE <= 150
+    assert MAX_BONUS_GOLD_PERMILLE <= 150
+
+
+def test_apply_bonus_adds_the_percentage_on_top() -> None:
+    assert apply_bonus(100, 150) == 115
+
+
+def test_apply_bonus_never_touches_a_non_positive_amount() -> None:
+    assert apply_bonus(0, 150) == 0
+    assert apply_bonus(-30, 150) == -30
+
+
+def test_apply_bonus_ignores_a_negative_percentage() -> None:
+    assert apply_bonus(100, -500) == 100

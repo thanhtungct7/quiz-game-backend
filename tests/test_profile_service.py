@@ -16,7 +16,6 @@ from app.models.game.achievement import (
     UserAchievement,
 )
 from app.models.game.game_class import GameClass
-from app.models.game.game_item import EquipmentSlot, GameItem, ItemKind, ItemRarity
 from app.models.game.user_game_profile import UserGameProfile
 from app.repository.profile.profile_stats_repository import LearningTotals
 from app.services.game.achievements import AchievementMetrics
@@ -68,25 +67,6 @@ def _make_class(**overrides: object) -> GameClass:
         starting_mana=10,
         defence=3,
         sort_order=1,
-        is_active=True,
-    )
-    for name, value in overrides.items():
-        setattr(row, name, value)
-    return row
-
-
-def _make_item(**overrides: object) -> GameItem:
-    row = GameItem(
-        id="item-1",
-        code="CHAIN_MAIL",
-        name="Giáp xích",
-        kind=ItemKind.EQUIPMENT,
-        slot=EquipmentSlot.ARMOR,
-        rarity=ItemRarity.RARE,
-        bonus_max_hp=8,
-        bonus_damage_permille=0,
-        bonus_starting_mana=0,
-        bonus_defence=1,
         is_active=True,
     )
     for name, value in overrides.items():
@@ -206,28 +186,16 @@ class FakeCatalogRepository:
         return self.class_row
 
 
-class FakeItemRepository:
-    def __init__(self, calls: list[str], equipment: list[GameItem]) -> None:
-        self.calls = calls
-        self.equipment_rows = equipment
-
-    async def equipment(self, user_id: str) -> list[tuple[object, GameItem]]:
-        self.calls.append("equipment")
-        return [(None, item) for item in self.equipment_rows]
-
-
 def _service(
     repository: FakeStatsRepository,
     *,
     class_row: GameClass | None = None,
-    equipment: list[GameItem] | None = None,
     held: list[tuple[UserAchievement, Achievement]] | None = None,
     achievement_catalog: list[Achievement] | None = None,
 ) -> ProfileService:
     return ProfileService(  # type: ignore[arg-type]
         stats=repository,
         catalog=FakeCatalogRepository(repository.calls, class_row),
-        items=FakeItemRepository(repository.calls, equipment or []),
         achievements=FakeAchievementService(repository.calls, held, achievement_catalog),
         config=settings,
     )
@@ -275,7 +243,10 @@ async def test_a_player_with_no_profile_row_has_a_full_energy_bar() -> None:
 
 async def test_level_is_recomputed_from_experience_not_read_from_the_column() -> None:
     # The cached column is deliberately wrong; the card must ignore it.
-    profile = _make_profile(total_exp=exp_for_level(12), level=99)
+    # Past the first level cap (10), so a cleared Benchmark Exam is needed for
+    # experience alone to explain a level of 12 -- see test_leveling.py for the
+    # cap itself.
+    profile = _make_profile(total_exp=exp_for_level(12), level=99, benchmark_cleared_level=25)
     service = _service(FakeStatsRepository(found=(_make_user(), profile, None)))
 
     card = await service.get_public("user-1")
@@ -284,7 +255,11 @@ async def test_level_is_recomputed_from_experience_not_read_from_the_column() ->
 
 
 async def test_the_band_and_the_estimate_follow_the_level() -> None:
-    profile = _make_profile(total_exp=exp_for_level(cefr_floor(CefrBand.B1)))
+    # B1 opens at level 26, one past the level-25 cap -- cleared here so the
+    # band is read off the raw level rather than off the cap.
+    profile = _make_profile(
+        total_exp=exp_for_level(cefr_floor(CefrBand.B1)), benchmark_cleared_level=25
+    )
     service = _service(FakeStatsRepository(found=(_make_user(), profile, None)))
 
     card = await service.get_public("user-1")
@@ -294,7 +269,10 @@ async def test_the_band_and_the_estimate_follow_the_level() -> None:
 
 
 async def test_the_next_band_runs_out_at_the_top() -> None:
-    profile = _make_profile(total_exp=exp_for_level(cefr_floor(CefrBand.C2)))
+    # Every cap cleared, so nothing is left to hold the level back from C2.
+    profile = _make_profile(
+        total_exp=exp_for_level(cefr_floor(CefrBand.C2)), benchmark_cleared_level=92
+    )
     service = _service(FakeStatsRepository(found=(_make_user(), profile, None)))
 
     card = await service.get_self("user-1")
@@ -343,15 +321,18 @@ async def test_a_player_who_has_answered_nothing_does_not_divide_by_zero() -> No
 # --- the round trips -------------------------------------------------------
 
 
-async def test_a_full_profile_costs_exactly_five_queries() -> None:
+async def test_a_full_profile_costs_exactly_four_queries() -> None:
     """The public card has a 100ms budget. If this starts failing, something
     began fetching per-field.
 
-    Five is the ceiling and this is the shape that reaches it: identity and
-    standing together, the study totals, the class row, the equipped items and
-    the unlocked achievements. Note what is *not* in the list -- the skill bar.
-    A card does not draw it, and `LoadoutBuilder` would have loaded it and
-    granted starters on the way past, which is a write on a read path.
+    Four is the ceiling and this is the shape that reaches it: identity and
+    standing together, the study totals, the class row and the unlocked
+    achievements. Note what is *not* in the list -- equipment and the skill
+    bar. Equipment stopped feeding the combat stat block (it only moves a
+    match or lesson's EXP/Gold payout now, read at settlement time, not on a
+    card), and a card does not draw the skill bar at all -- `LoadoutBuilder`
+    would have loaded it and granted starters on the way past, which is a
+    write on a read path.
     """
     repository = FakeStatsRepository(
         found=(_make_user(), _make_profile(class_code="WARRIOR"), None)
@@ -364,7 +345,6 @@ async def test_a_full_profile_costs_exactly_five_queries() -> None:
         "identity",
         "learning",
         "class",
-        "equipment",
         "achievements",
     ]
 
@@ -375,12 +355,12 @@ async def test_a_player_with_no_class_is_not_charged_for_the_class_row() -> None
 
     await service.get_public("user-1")
 
-    assert repository.calls == ["identity", "learning", "equipment", "achievements"]
+    assert repository.calls == ["identity", "learning", "achievements"]
 
 
 async def test_an_account_older_than_the_game_layer_costs_no_game_queries() -> None:
-    """No game profile means no class and no equipment to hang on it, so those
-    two are skipped rather than answered with nothing."""
+    """No game profile means no class to hang on it, so it is skipped rather
+    than answered with nothing."""
     repository = FakeStatsRepository(found=(_make_user(), None, None))
     service = _service(repository)
 
@@ -416,38 +396,24 @@ async def test_a_player_with_no_class_fights_on_the_baseline() -> None:
     assert combat.defence == 0
 
 
-async def test_the_card_adds_up_class_armour_and_streak() -> None:
+async def test_the_card_adds_up_class_and_streak() -> None:
     """The whole point of the block: what a match would really use, not a base
-    the client has to assemble out of three endpoints."""
+    the client has to assemble out of two endpoints. Equipment is deliberately
+    not one of the inputs any more -- see `loot.RewardBonus` for where that
+    lever moved."""
     repository = FakeStatsRepository(
         found=(_make_user(), _make_profile(class_code="WARRIOR", day_streak=10), None)
     )
-    service = _service(repository, class_row=_make_class(), equipment=[_make_item()])
+    service = _service(repository, class_row=_make_class())
 
     combat = (await service.get_public("user-1")).combat
 
     buff = streak_buff(10)
-    assert combat.hp == 115 + 8 + buff.bonus_max_hp
-    assert combat.defence == 3 + 1
+    assert combat.hp == 115 + buff.bonus_max_hp
+    assert combat.defence == 3
     assert combat.mana == 10 + buff.bonus_starting_mana
     assert combat.atk == attack_for(900)
     assert combat.damage_permille == 900
-
-
-async def test_a_retired_item_is_not_worn() -> None:
-    """Same rule the loadout builder follows: an item pulled from the catalog
-    stays in the table until the player edits their gear, and must stop
-    counting the moment it is retired."""
-    repository = FakeStatsRepository(
-        found=(_make_user(), _make_profile(class_code="WARRIOR"), None)
-    )
-    service = _service(
-        repository, class_row=_make_class(), equipment=[_make_item(is_active=False)]
-    )
-
-    combat = (await service.get_public("user-1")).combat
-
-    assert combat.defence == 3
 
 
 async def test_the_breakdown_adds_up_to_the_totals() -> None:
@@ -457,7 +423,7 @@ async def test_the_breakdown_adds_up_to_the_totals() -> None:
     repository = FakeStatsRepository(
         found=(_make_user(), _make_profile(class_code="WARRIOR", day_streak=10), None)
     )
-    service = _service(repository, class_row=_make_class(), equipment=[_make_item()])
+    service = _service(repository, class_row=_make_class())
 
     breakdown = await service.get_combat_breakdown("user-1")
 
@@ -467,7 +433,6 @@ async def test_the_breakdown_adds_up_to_the_totals() -> None:
     assert sum(source.mana for source in breakdown.sources) == breakdown.total.mana
     assert [source.kind for source in breakdown.sources] == [
         StatSourceKind.CLASS,
-        StatSourceKind.EQUIPMENT,
         StatSourceKind.STREAK,
     ]
 

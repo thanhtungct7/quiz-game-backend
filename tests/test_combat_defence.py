@@ -12,11 +12,9 @@ gives: no test fails when a number in the catalog is doubled, it just stops
 being a fight.
 """
 
-from app.models.game.game_item import EquipmentSlot
 from app.services.game.catalog import (
     ASSASSIN,
     CLASSES,
-    ITEMS,
     MAGE,
     MONSTERS,
     WARRIOR,
@@ -28,7 +26,6 @@ from app.services.game.combat import (
     apply_defence,
     resolve_blow,
 )
-from app.services.game.loot import MAX_BONUS_DEFENCE, StatBonus, total_bonus
 from app.services.pve.monster import MonsterProfile, monster_attack
 
 LIMIT = 20  # seconds
@@ -153,15 +150,14 @@ def test_a_monster_swing_is_blunted_by_defence() -> None:
     assert guarded.raw_damage == bare.raw_damage
 
 
-def test_the_weakest_monster_still_gets_through_full_armour() -> None:
-    """The claim `MAX_BONUS_DEFENCE` is set by. A warrior in the best armour in
-    the catalog still takes damage from the smallest thing in it -- otherwise
-    the learn path would have a build that simply cannot lose."""
+def test_the_weakest_monster_still_gets_through_the_toughest_class() -> None:
+    """The warrior's own DEF -- the only source of it left now equipment
+    carries none -- still lets the smallest thing in the catalog through,
+    otherwise the learn path would have a build that simply cannot lose."""
     warrior = next(spec for spec in CLASSES if spec.code == WARRIOR)
-    armoured = warrior.defence + MAX_BONUS_DEFENCE
     weakest = min(MONSTERS, key=lambda spec: spec.attack_damage)
     landed = monster_attack(
-        monster=_profile(weakest), elapsed_seconds=0, defender_flat_reduction=armoured
+        monster=_profile(weakest), elapsed_seconds=0, defender_flat_reduction=warrior.defence
     )
     assert landed.final_damage > 0
 
@@ -180,17 +176,3 @@ def test_the_warrior_pays_for_defence_in_health() -> None:
     class before DEF existed and must not simply have gained a fourth stat."""
     by_code = {spec.code: spec for spec in CLASSES}
     assert by_code[WARRIOR].max_hp < 130
-
-
-def test_only_armour_carries_defence() -> None:
-    """Three slots, three different decisions. A weapon that also defended
-    would make the armour slot the only one with a wrong answer."""
-    defending = [spec for spec in ITEMS if spec.bonus_defence > 0]
-
-    assert defending, "the drop table should offer defence somewhere"
-    assert all(spec.slot is EquipmentSlot.ARMOR for spec in defending)
-
-
-def test_piling_on_armour_cannot_beat_the_ceiling() -> None:
-    piled = total_bonus([StatBonus(defence=5), StatBonus(defence=5), StatBonus(defence=5)])
-    assert piled.defence == MAX_BONUS_DEFENCE
