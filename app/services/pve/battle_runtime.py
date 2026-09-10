@@ -34,6 +34,7 @@ from fastapi import WebSocket
 from pydantic import BaseModel
 
 from app.models.auth.user import User
+from app.models.content.challenge import ChallengeType
 from app.models.game.skill import SkillEffect
 from app.models.pve.lesson_battle import BattleEndReason, BattleStatus
 from app.schemas.content.course_content import ChallengePublicRead
@@ -232,9 +233,13 @@ class BattleEngine:
     # --- player input -------------------------------------------------------
 
     async def submit_answer(
-        self, user_id: str, websocket: WebSocket, token: str, option_id: str
+        self, user_id: str, websocket: WebSocket, token: str, option_ids: list[str]
     ) -> None:
         """Resolve one answer, here and now.
+
+        `option_ids` is the answer whatever shape the question takes: one
+        option for a single-choice round, every word tile in the order it was
+        laid down for an ORDER one.
 
         Graded against the key loaded at setup rather than through the study
         path, so the blow lands on the frame the tap arrived rather than a
@@ -252,9 +257,9 @@ class BattleEngine:
                 websocket, ErrorCode.QUESTION_CLOSED, "That question is no longer open"
             )
             return
-        if option_id not in {option.id for option in question.options}:
+        if not _answer_fits(question, option_ids):
             await _send_error(
-                websocket, ErrorCode.INVALID_OPTION, "That option is not on this question"
+                websocket, ErrorCode.INVALID_OPTION, "That is not an answer to this question"
             )
             return
 
@@ -268,9 +273,9 @@ class BattleEngine:
         correct_ids = battle.answer_key.get(question.id, [])
         answer = SubmittedAnswer(
             question_id=question.id,
-            option_id=option_id,
+            option_ids=list(option_ids),
             elapsed_ms=elapsed_ms,
-            is_correct=option_id in correct_ids,
+            is_correct=_is_correct(question, correct_ids, option_ids),
             correct_option_ids=list(correct_ids),
             explanation=battle.explanations.get(question.id),
         )
@@ -286,6 +291,7 @@ class BattleEngine:
                 token=token,
                 correct=answer.is_correct,
                 option_id=answer.option_id,
+                option_ids=answer.option_ids,
                 elapsed_ms=answer.elapsed_ms,
                 correct_option_ids=answer.correct_option_ids,
                 explanation=answer.explanation,
@@ -348,7 +354,7 @@ class BattleEngine:
         async def record() -> None:
             with contextlib.suppress(Exception):
                 await self.persistence.check_answer(
-                    battle.user_id, answer.question_id, answer.option_id
+                    battle.user_id, answer.question_id, answer.option_ids
                 )
 
         task = asyncio.create_task(record())
@@ -395,6 +401,18 @@ class BattleEngine:
         if skill.effect is SkillEffect.REMOVE_OPTIONS and battle.current_question is None:
             await _send_error(
                 websocket, ErrorCode.QUESTION_CLOSED, "There is no question to narrow"
+            )
+            return
+        # An ORDER question has no wrong tile to hide -- every one of them
+        # belongs in the sentence. Refused before the mana is taken, for the
+        # same reason the cast above is.
+        if (
+            skill.effect is SkillEffect.REMOVE_OPTIONS
+            and battle.current_question is not None
+            and battle.current_question.type is ChallengeType.ORDER
+        ):
+            await _send_error(
+                websocket, ErrorCode.SKILL_NO_TARGET, "There is nothing to narrow on this question"
             )
             return
 
@@ -554,6 +572,7 @@ class BattleEngine:
             monster=battle.monster.profile,
             elapsed_seconds=now - battle.started_at,
             defender_reduction_permille=self._defence_permille(battle, now),
+            defender_flat_reduction=battle.build.defence,
         )
         battle.hp = apply_damage(battle.hp, attack.final_damage)
         if attack.final_damage > 0:
@@ -577,7 +596,9 @@ class BattleEngine:
             monster=battle.monster.profile,
             elapsed_seconds=now - battle.started_at,
             defender_reduction_permille=self._standing_defence_permille(battle, now),
+            defender_flat_reduction=battle.build.defence,
         )
+
         await _send(
             battle.websocket,
             ServerEvent.STATE_TICK,
@@ -749,6 +770,38 @@ class BattleEngine:
 
 
 # --- module helpers --------------------------------------------------------
+
+
+def _answer_fits(question: ChallengePublicRead, option_ids: list[str]) -> bool:
+    """Whether this submission is even a possible answer to this question.
+
+    An ORDER question takes every one of its tiles, each used once: a partial
+    sentence is not the sentence, and a tile placed twice is not something the
+    word-tile surface can produce. Every other type takes exactly one option.
+    """
+    available = {option.id for option in question.options}
+    if not option_ids or not available.issuperset(option_ids):
+        return False
+    if question.type is ChallengeType.ORDER:
+        return len(option_ids) == len(available) == len(set(option_ids))
+    return len(option_ids) == 1
+
+
+def _is_correct(
+    question: ChallengePublicRead, answer_key: list[str], option_ids: list[str]
+) -> bool:
+    """Grade one answer against the key drawn when the battle started.
+
+    For an ORDER question the key is the solution in order, and the comparison
+    is on the *words* rather than the ids: a sentence can repeat a word, and
+    two tiles carrying the same one are interchangeable -- swapping them still
+    spells the right sentence. That is the rule the study path grades by, and
+    the two must never disagree about the same answer.
+    """
+    if question.type is not ChallengeType.ORDER:
+        return option_ids[0] in answer_key
+    text_of = {option.id: option.text for option in question.options}
+    return [text_of.get(o) for o in option_ids] == [text_of.get(o) for o in answer_key]
 
 
 def _cooldown_seconds(skill: EquippedSkill) -> float:

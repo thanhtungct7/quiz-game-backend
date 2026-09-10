@@ -16,6 +16,7 @@ from app.core.config import settings
 from app.core.logging import configure_logging
 from app.db.session import AsyncSessionFactory, engine
 from app.repository.auth.user_repository import UserRepository
+from app.repository.game.achievement_repository import AchievementRepository
 from app.repository.game.catalog_repository import CatalogRepository
 from app.repository.game.item_repository import ItemRepository
 from app.repository.game.monster_repository import MonsterRepository
@@ -24,6 +25,7 @@ from app.services.content.admin_bootstrap_service import AdminSeedService, seed_
 from app.services.duo.housekeeping import abandon_orphaned_matches, run_housekeeping
 from app.services.duo.match_runtime import engine as duo_engine
 from app.services.game.catalog import (
+    seed_achievement_catalog,
     seed_game_catalog,
     seed_item_catalog,
     seed_monster_catalog,
@@ -49,6 +51,10 @@ async def lifespan(_: FastAPI) -> AsyncIterator[None]:
         # Monsters are mapped onto lessons by position, so seeding the
         # catalog is all it takes for every gate on the path to be guarded.
         await seed_monster_catalog(MonsterRepository(db))
+        # Thresholds over counters that already exist, so seeding these is all
+        # it takes for accounts that predate them to unlock retroactively on
+        # their next sync.
+        await seed_achievement_catalog(AchievementRepository(db))
         await ensure_active_season(SeasonRepository(db))
 
     # Duo match state lives in this process, so anything left IN_PROGRESS

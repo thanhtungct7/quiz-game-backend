@@ -44,6 +44,7 @@ class GameClassRead(BaseModel):
     max_hp: int
     damage_permille: int
     starting_mana: int
+    defence: int
     is_current: bool
 
 
@@ -121,6 +122,7 @@ class ItemRead(BaseModel):
     bonus_max_hp: int
     bonus_damage_permille: int
     bonus_starting_mana: int
+    bonus_defence: int
     quantity: int
     equipped: bool
 
@@ -131,6 +133,8 @@ class InventoryRead(BaseModel):
     bonus_max_hp: int
     bonus_damage_permille: int
     bonus_starting_mana: int
+    bonus_defence: int
+
 
 
 class EquipmentRequest(BaseModel):

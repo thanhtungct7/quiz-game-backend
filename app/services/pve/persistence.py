@@ -17,7 +17,11 @@ from typing import Protocol
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.exceptions import ChallengeNotFoundError, ChallengeOptionNotFoundError
+from app.core.exceptions import (
+    ChallengeNotFoundError,
+    ChallengeOptionNotFoundError,
+    InvalidAnswerSubmissionError,
+)
 from app.db.session import AsyncSessionFactory
 from app.models.progress.user_lesson_progress import LessonProgressStatus
 from app.models.pve.lesson_battle import BattleEndReason, BattleStatus, LessonBattle
@@ -25,6 +29,7 @@ from app.repository.content.challenge_repository import ChallengeRepository
 from app.repository.content.course_repository import CourseRepository
 from app.repository.content.lesson_repository import LessonRepository
 from app.repository.content.unit_repository import UnitRepository
+from app.repository.game.achievement_repository import AchievementRepository
 from app.repository.game.activity_repository import ActivityRepository
 from app.repository.game.catalog_repository import CatalogRepository
 from app.repository.game.game_profile_repository import GameProfileRepository
@@ -37,6 +42,7 @@ from app.repository.pve.lesson_battle_repository import LessonBattleRepository
 from app.schemas.content.quiz import AnswerCheckResult, QuizSetWithAnswers
 from app.schemas.pve.events import ErrorCode, LessonProgressChange
 from app.services.content.quiz_service import QuizService
+from app.services.game.achievement_service import AchievementService
 from app.services.game.lesson_rewards import LessonRewardService
 from app.services.game.loadout import PlayerLoadout
 from app.services.game.loadout_builder import LoadoutBuilder
@@ -108,7 +114,7 @@ class BattlePersistence(Protocol):
     ) -> BattleSetup | BattleStartRejected: ...
 
     async def check_answer(
-        self, user_id: str, challenge_id: str, option_id: str
+        self, user_id: str, challenge_id: str, option_ids: list[str]
     ) -> AnswerCheckResult | None: ...
 
     async def create_battle(self, battle: LiveBattle) -> None: ...
@@ -187,7 +193,7 @@ class DatabaseBattlePersistence:
         )
 
     async def check_answer(
-        self, user_id: str, challenge_id: str, option_id: str
+        self, user_id: str, challenge_id: str, option_ids: list[str]
     ) -> AnswerCheckResult | None:
         """Grade one answer through the ordinary study path.
 
@@ -195,6 +201,10 @@ class DatabaseBattlePersistence:
         screen makes, so the battle's answers are study, not a parallel record
         of it. Returns None for an answer the content layer refuses, which the
         engine treats as a miss rather than as a crash.
+
+        Both shapes of the answer are handed over and the service picks the one
+        the challenge type calls for -- a single choice for SELECT and ASSIST,
+        the whole sequence for ORDER.
         """
         async with AsyncSessionFactory() as db:
             service = ProgressService(
@@ -206,11 +216,21 @@ class DatabaseBattlePersistence:
                 rewards=LessonRewardService(
                     profiles=GameProfileRepository(db),
                     activity=ActivityRepository(db),
+                    achievements=AchievementService(AchievementRepository(db)),
                 ),
             )
             try:
-                return await service.check_answer(user_id, challenge_id, option_id)
-            except (ChallengeNotFoundError, ChallengeOptionNotFoundError):
+                return await service.check_answer(
+                    user_id,
+                    challenge_id,
+                    option_ids[0] if len(option_ids) == 1 else None,
+                    selected_option_ids=list(option_ids),
+                )
+            except (
+                ChallengeNotFoundError,
+                ChallengeOptionNotFoundError,
+                InvalidAnswerSubmissionError,
+            ):
                 return None
 
     async def create_battle(self, battle: LiveBattle) -> None:
@@ -281,6 +301,7 @@ class DatabaseBattlePersistence:
             ledger=GoldTransactionRepository(db),
             items=ItemRepository(db),
             activity=ActivityRepository(db),
+            achievements=AchievementService(AchievementRepository(db)),
         ).settle_battle(
             user_id=battle.user_id,
             battle_id=battle.battle_id,
@@ -323,6 +344,7 @@ class DatabaseBattlePersistence:
                 rewards=LessonRewardService(
                     profiles=GameProfileRepository(db),
                     activity=ActivityRepository(db),
+                    achievements=AchievementService(AchievementRepository(db)),
                 ),
             ).mark_lesson_completed(user_id, lesson_id)
 

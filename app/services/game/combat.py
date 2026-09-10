@@ -36,6 +36,13 @@ QUICK_BONUS = 4
 HEAVY_THRESHOLD_RATIO = 0.6
 HEAVY_PIERCE_SHARE = 0.5
 
+# Defence is subtracted flat, after any percentage shield has been applied. A
+# blow that survived the shield always gets at least this much through: DEF is
+# meant to slow a fight down, never to turn a correct answer into nothing.
+# Deliberately *not* applied to `defender_reduction_permille` -- a 100% shield
+# still stops a blow dead, which is most of what makes casting one worth doing.
+MIN_DAMAGE_THROUGH = 1
+
 COMBO_TIER_1 = 3
 COMBO_TIER_1_MULTIPLIER = 1.5
 COMBO_TIER_2 = 5
@@ -72,6 +79,9 @@ class Blow:
     is_critical: bool
     stuns_opponent: bool
     element_multiplier: float
+    # What flat defence actually ate, after the HEAVY pierce and the floor.
+    # Carried so a blow can explain itself without the caller redoing the maths.
+    defence: int
     final_damage: int
 
     @classmethod
@@ -85,8 +95,10 @@ class Blow:
             is_critical=False,
             stuns_opponent=False,
             element_multiplier=1.0,
+            defence=0,
             final_damage=0,
         )
+
 
 
 @dataclass(frozen=True)
@@ -169,6 +181,20 @@ def apply_damage(hp: int, damage: int) -> int:
     return max(0, hp - max(0, damage))
 
 
+def apply_defence(damage: int, flat_reduction: int) -> int:
+    """Take flat defence off a blow that has already survived any shield.
+
+    Shared by duo and PvE so that one point of DEF is worth the same wherever a
+    player is standing. A blow already stopped at zero stays at zero: the floor
+    is here to stop defence from nullifying a hit, not to resurrect one a shield
+    has already removed.
+    """
+    flat = max(0, flat_reduction)
+    if flat <= 0 or damage <= 0:
+        return max(0, damage)
+    return max(MIN_DAMAGE_THROUGH, damage - flat)
+
+
 def resolve_blow(
     *,
     is_correct: bool,
@@ -177,6 +203,7 @@ def resolve_blow(
     combo_count: int,
     attacker_damage_permille: int = PERMILLE_ONE,
     defender_reduction_permille: int = 0,
+    defender_flat_reduction: int = 0,
     element_multiplier: float = 1.0,
 ) -> Blow:
     """Resolve one player's attack for one round.
@@ -184,8 +211,16 @@ def resolve_blow(
     `combo_count` is the combo *including* this answer, so the third correct
     answer in a row is the one that lands at 1.5x.
 
-    A HEAVY strike ignores part of the defender's damage reduction, which is
-    the only thing that makes taking the slow, careful route worth anything.
+    Two defences, applied in that order and deliberately different in shape.
+    `defender_reduction_permille` is the percentage shield a skill puts up: it
+    scales with the blow, so it is worth most against a big hit.
+    `defender_flat_reduction` is the DEF a class and its armour carry: it is
+    worth the same against every hit, so it blunts a stream of ordinary answers
+    and barely dents a critical. Neither of them is a branch through this
+    function -- both are numbers the callers resolve before they get here.
+
+    A HEAVY strike ignores part of *both*, which is the only thing that makes
+    taking the slow, careful route worth anything.
     """
     if not is_correct:
         return Blow.none()
@@ -200,10 +235,13 @@ def resolve_blow(
     scaled = scaled * attacker_damage_permille / PERMILLE_ONE
 
     reduction = max(0, defender_reduction_permille)
+    flat = max(0, defender_flat_reduction)
     if strike is StrikeKind.HEAVY:
         reduction = round(reduction * (1.0 - HEAVY_PIERCE_SHARE))
+        flat = round(flat * (1.0 - HEAVY_PIERCE_SHARE))
     reduction = min(reduction, PERMILLE_ONE)
-    final = round(scaled * (PERMILLE_ONE - reduction) / PERMILLE_ONE)
+    after_shield = round(scaled * (PERMILLE_ONE - reduction) / PERMILLE_ONE)
+    final = apply_defence(after_shield, flat)
 
     return Blow(
         raw_damage=raw,
@@ -213,5 +251,7 @@ def resolve_blow(
         is_critical=is_critical,
         stuns_opponent=stuns,
         element_multiplier=element_multiplier,
+        defence=max(0, after_shield) - max(0, final),
         final_damage=max(0, final),
     )
+

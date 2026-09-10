@@ -540,6 +540,7 @@ class DuoEngine:
             combo_count=player.combo,
             attacker_damage_permille=self._attack_permille(player, opponent, now),
             defender_reduction_permille=self._defence_permille(opponent, now),
+            defender_flat_reduction=self._defence_flat(opponent),
         )
         if opponent is not None:
             opponent.hp = apply_damage(opponent.hp, blow.final_damage)
@@ -937,6 +938,17 @@ class DuoEngine:
             return 0
         shield = player.effects.consume(SkillEffect.DAMAGE_REDUCTION, now)
         return shield.magnitude if shield is not None else 0
+
+    def _defence_flat(self, player: PlayerConn | None) -> int:
+        """The DEF the defender's class and armour carry.
+
+        Kept apart from `_defence_permille` because the two have different
+        lifetimes, not because they do different jobs: a shield is cast and
+        spent as it is used, while this stands for the whole match and is never
+        consumed. Taking no `now` is what says so.
+        """
+        return player.build.defence if player is not None else 0
+
 
     # --- ending -------------------------------------------------------------
 

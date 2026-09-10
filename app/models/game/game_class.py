@@ -13,9 +13,14 @@ PERMILLE_ONE = 1000
 class GameClass(Base):
     """A character class: the stat block a player brings into a match.
 
-    Only three knobs, deliberately. A class changes the numbers fed to
+    Four knobs, deliberately. A class changes the numbers fed to
     `combat.resolve_blow`; it never adds a branch to how a blow is resolved,
     so adding a class is a data change and not an engine change.
+
+    `defence` is flat damage taken off every incoming blow rather than a
+    percentage, so it reads as a number a player can compare against the damage
+    numbers they see. It feeds `resolve_blow`'s existing `defender_flat_
+    reduction`, which is why a fourth knob still costs the engine nothing.
     """
 
     __tablename__ = "game_classes"
@@ -31,7 +36,9 @@ class GameClass(Base):
     starting_mana: Mapped[int] = mapped_column(
         Integer, nullable=False, default=0, server_default="0"
     )
+    defence: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
     sort_order: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
+
     is_active: Mapped[bool] = mapped_column(
         Boolean, nullable=False, default=True, server_default="true"
     )

@@ -52,6 +52,20 @@ CAPTURE_PATH = (
 )
 
 
+def _answer_payload(pushed: dict[str, Any]) -> dict[str, Any]:
+    """An answer to whatever was pushed, right or wrong.
+
+    A single-choice question is answered with its first option; an ORDER one
+    with every tile in the order it arrived, which is shuffled -- so this
+    usually spells the sentence wrong, and that is fine. The point is that the
+    protocol runs end to end, not that the run is won.
+    """
+    option_ids = [option["id"] for option in pushed["question"]["options"]]
+    if pushed["question"]["type"] == "ORDER":
+        return {"token": pushed["token"], "option_ids": option_ids}
+    return {"token": pushed["token"], "option_id": option_ids[0]}
+
+
 @dataclass
 class Client:
     """One player: an HTTP identity plus its live socket."""
@@ -387,13 +401,7 @@ class Smoke:
                     all("correct" not in option for option in data["question"]["options"]),
                 )
 
-            await client.send(
-                "answer.submit",
-                {
-                    "token": data["token"],
-                    "option_id": data["question"]["options"][0]["id"],
-                },
-            )
+            await client.send("answer.submit", _answer_payload(data))
             event, result = await client.expect_any("answer.result", "battle.finished")
             if event == "battle.finished":
                 finished = result

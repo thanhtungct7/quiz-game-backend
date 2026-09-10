@@ -9,7 +9,7 @@ The player attacks through `combat.resolve_blow` -- the same maths duo uses,
 so a build that works in PvP works here. Only the monster's blow is new, and it
 is deliberately the simplest thing that can be balanced: a flat number,
 multiplied when the monster is enraged, reduced by whatever shield the player
-is standing behind.
+is standing behind and then by the DEF their class and armour carry.
 
 The monster now swings on a clock of its own rather than on the player's
 mistakes, so `cast_interval_seconds` sits beside the damage as a balance knob
@@ -21,7 +21,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from enum import StrEnum
 
-from app.services.game.combat import PERMILLE_ONE
+from app.services.game.combat import PERMILLE_ONE, apply_defence
 from app.services.pve.clock import SECONDS_PER_ROUND
 
 # Six tiers over the whole learn path. A unit is eight lessons, so a tier
@@ -173,13 +173,20 @@ def monster_attack(
     monster: MonsterProfile,
     elapsed_seconds: float,
     defender_reduction_permille: int = 0,
+    defender_flat_reduction: int = 0,
 ) -> MonsterAttack:
     """The blow the monster lands when its cast finishes.
 
     No longer earned by a missed question: the cast bar decides, so a perfect
     run is one where the player killed the monster before it ever completed a
-    wind-up. `defender_reduction_permille` is whatever the player has standing
-    on them, read the same way `combat.resolve_blow` reads it.
+    wind-up. Both defences are whatever the player has standing on them, read
+    in the same order and with the same meaning `combat.resolve_blow` gives
+    them: the percentage shield first, then flat DEF off what is left.
+
+    Monsters hit for single digits, so a point of DEF is worth much more here
+    than it is in duo. That is the intended shape -- gear and a class are meant
+    to make the learn path easier -- and it is why `loot.MAX_BONUS_DEFENCE` is
+    tight enough that the weakest monster in the catalog still gets through.
     """
     enraged = is_enraged(elapsed_seconds, monster)
     raw = max(0, monster.attack_damage)
@@ -187,7 +194,8 @@ def monster_attack(
         raw = raw * max(0, monster.enrage_multiplier_permille) // PERMILLE_ONE
 
     reduction = min(max(0, defender_reduction_permille), PERMILLE_ONE)
-    final = raw * (PERMILLE_ONE - reduction) // PERMILLE_ONE
+    after_shield = raw * (PERMILLE_ONE - reduction) // PERMILLE_ONE
+    final = apply_defence(after_shield, defender_flat_reduction)
     return MonsterAttack(raw_damage=raw, enraged=enraged, final_damage=max(0, final))
 
 
@@ -196,6 +204,7 @@ def next_swing(
     monster: MonsterProfile,
     elapsed_seconds: float,
     defender_reduction_permille: int = 0,
+    defender_flat_reduction: int = 0,
 ) -> tuple[MonsterIntentKind, int]:
     """What the cast currently filling will do when it lands.
 
@@ -206,6 +215,8 @@ def next_swing(
         monster=monster,
         elapsed_seconds=elapsed_seconds,
         defender_reduction_permille=defender_reduction_permille,
+        defender_flat_reduction=defender_flat_reduction,
     )
+
     kind = MonsterIntentKind.ENRAGED_ATTACK if attack.enraged else MonsterIntentKind.ATTACK
     return kind, attack.final_damage

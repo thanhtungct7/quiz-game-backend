@@ -29,6 +29,7 @@ def _classes() -> list[GameClass]:
             max_hp=spec.max_hp,
             damage_permille=spec.damage_permille,
             starting_mana=spec.starting_mana,
+            defence=spec.defence,
             sort_order=spec.sort_order,
             is_active=True,
         )
@@ -340,6 +341,7 @@ def _items() -> list[GameItem]:
             bonus_max_hp=spec.bonus_max_hp,
             bonus_damage_permille=spec.bonus_damage_permille,
             bonus_starting_mana=spec.bonus_starting_mana,
+            bonus_defence=spec.bonus_defence,
             is_active=True,
         )
         for spec in ITEMS

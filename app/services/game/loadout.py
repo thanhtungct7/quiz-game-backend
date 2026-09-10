@@ -34,9 +34,15 @@ class PlayerLoadout:
     max_hp: int
     starting_mana: int
     damage_permille: int
+    # Flat damage off every blow this player takes, from their class and armour.
+    # Defaults to zero, which is what keeps a player with no class -- the
+    # reference player `test_pve_balance` measures the whole catalog against --
+    # exactly as fragile as they were before defence existed.
+    defence: int = 0
     # Already folded into max_hp and starting_mana; carried so the client can
     # explain where the head start came from.
     day_streak: int = 0
+
     skills: tuple[EquippedSkill, ...] = ()
 
     def skill(self, code: str) -> EquippedSkill | None:

@@ -19,6 +19,7 @@ from app.repository.game.gold_transaction_repository import GoldTransactionRepos
 from app.repository.game.item_repository import ItemRepository
 from app.repository.game.season_repository import SeasonRepository
 from app.services.duo.scoring import MatchOutcome
+from app.services.game.achievement_service import AchievementService
 from app.services.game.leveling import apply_exp, level_for_exp
 from app.services.game.loot import ItemDrop, roll_item
 from app.services.game.rewards import RewardInput, compute_reward
@@ -129,16 +130,18 @@ class GameSettlementService:
         items: ItemRepository | None = None,
         seasons: SeasonRepository | None = None,
         activity: ActivityRepository | None = None,
+        achievements: AchievementService | None = None,
         rng: random.Random | None = None,
     ) -> None:
         self.profiles = profiles
         self.ledger = ledger
         # The retention layer is optional so the economy can be settled on its
-        # own; a caller that leaves these out simply gets no chest or ladder
-        # movement rather than an error.
+        # own; a caller that leaves these out simply gets no chest, ladder
+        # movement or achievement rather than an error.
         self.items = items
         self.seasons = seasons
         self.activity = activity
+        self.achievements = achievements
         self.rng = rng or random.Random()  # noqa: S311 -- loot rolls, not security
 
     async def settle_match(
@@ -204,6 +207,9 @@ class GameSettlementService:
             user_id, match_id, won=data.outcome is MatchOutcome.WIN
         )
         season = await self._apply_season(user_id, data.outcome, all_time_rating)
+        # Last, and after everything that could move a counter: an achievement
+        # is a reading of the counters as they stand once the match is paid.
+        await self._sync_achievements(user_id)
 
         return PlayerSettlement(
             exp=ExpAward(exp_before, exp_after, level_before, level_after),
@@ -282,6 +288,7 @@ class GameSettlementService:
         # Chests are a boss reward here, so an ordinary lesson stays worth
         # doing without turning the path into a slot machine.
         loot = await self._roll_chest(user_id, battle_id, won=roll_chest)
+        await self._sync_achievements(user_id)
 
         return BattleSettlement(
             exp=ExpAward(exp_before, exp_after, level_before, level_after),
@@ -290,6 +297,18 @@ class GameSettlementService:
             loot=loot,
             streak=streak,
         )
+
+    async def _sync_achievements(self, user_id: str) -> None:
+        """Reconcile what this player has unlocked against what they have done.
+
+        Nothing is returned, and that is on purpose for now: the unlock is
+        durable and the client reads it back from the profile, so threading a
+        "you just earned this" down the match wire is a change to make when
+        there is a screen ready to show it rather than a field nobody reads.
+        """
+        if self.achievements is None:
+            return
+        await self.achievements.sync(user_id)
 
     async def _record_activity(
         self, user_id: str, profile: UserGameProfile

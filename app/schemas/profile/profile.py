@@ -15,9 +15,87 @@ from datetime import datetime
 
 from pydantic import BaseModel, EmailStr, Field
 
+from app.models.game.achievement import AchievementCategory
 from app.schemas.game.game import EnergyRead
 from app.services.game.cefr import CefrBand
+from app.services.game.combat_stats import StatSourceKind
 from app.services.game.season import RankTier
+
+
+class AchievementRead(BaseModel):
+    """One unlocked achievement, as a card shows it.
+
+    `icon_code` is resolved to artwork client-side the way a monster's
+    `art_code` is: the catalog can grow an achievement before anyone draws an
+    icon for it, and an unknown code should fall back rather than blank out.
+    """
+
+    code: str
+    name: str
+    description: str
+    category: AchievementCategory
+    icon_code: str
+    unlocked_at: datetime
+
+
+class AchievementProgressRead(AchievementRead):
+    """The same, plus how far off it is -- for the ones not yet earned.
+
+    `unlocked_at` is null until it is earned, and `current` is clamped to the
+    threshold so a finished bar cannot read as 130%.
+    """
+
+    unlocked_at: datetime | None = None  # type: ignore[assignment]
+    threshold: int
+    current: int
+    unlocked: bool
+
+
+class AchievementListRead(BaseModel):
+    unlocked_count: int
+    total: int
+    items: list[AchievementProgressRead]
+
+
+class CombatStatsRead(BaseModel):
+    """What a player brings into a fight, already resolved.
+
+    Class, equipment and the daily streak are added up server-side, so this is
+    what a match will really use rather than a base a client has to assemble.
+
+    `atk` is the damage a correct answer deals, not the multiplier that
+    produced it: `damage_permille` carries the exact figure for anyone who
+    needs it, but a card compares this against `hp` and the multiplier cannot
+    be compared against anything. `defence` is flat damage off each blow.
+    """
+
+    hp: int
+    atk: int
+    defence: int
+    mana: int
+    damage_permille: int
+
+
+class StatSourceRead(BaseModel):
+    """One line of "where did this number come from".
+
+    Every figure is a delta and the lines add up to [CombatStatsRead] exactly,
+    including the case where equipment ceilings clipped the total -- see
+    `combat_stats.resolve`.
+    """
+
+    kind: StatSourceKind
+    code: str
+    label: str
+    hp: int
+    atk: int
+    defence: int
+    mana: int
+
+
+class CombatBreakdownRead(BaseModel):
+    total: CombatStatsRead
+    sources: list[StatSourceRead]
 
 
 class LearningStatsRead(BaseModel):
@@ -77,6 +155,7 @@ class PublicProfileRead(BaseModel):
 
     pvp: PvpStatsRead
     learning: LearningStatsRead
+    combat: CombatStatsRead
 
     # Reserved for the character and achievement modules, which do not exist
     # yet. They are declared now, and answer null/empty until those modules
@@ -85,7 +164,13 @@ class PublicProfileRead(BaseModel):
     title: str | None = None
     companion_character: str | None = None
     skin_code: str | None = None
-    achievements: list[str] = Field(default_factory=list)
+
+    # The three most recently unlocked, which is what the overview tab draws.
+    # Not the whole list: this payload is fetched for every row of a
+    # leaderboard, and a player with fifty badges would make that fifty times
+    # heavier for a card that shows three. The full list is its own endpoint.
+    featured_achievements: list[AchievementRead] = Field(default_factory=list)
+    total_achievements_unlocked: int = 0
 
 
 class SelfProfileRead(PublicProfileRead):

@@ -29,7 +29,7 @@ class ItemRarity(StrEnum):
 class GameItem(Base):
     """Something a chest can drop.
 
-    An EQUIPMENT item moves exactly the three numbers a class moves. SKIN and
+    An EQUIPMENT item moves exactly the four numbers a class moves. SKIN and
     CARD items are cosmetic and collectible and carry no bonus at all, which
     keeps the reward table interesting without letting it decide fights.
     """
@@ -56,7 +56,13 @@ class GameItem(Base):
     bonus_starting_mana: Mapped[int] = mapped_column(
         Integer, nullable=False, default=0, server_default="0"
     )
+    # Flat damage taken off each incoming blow. Only armour carries it, so the
+    # three equipment slots stay three different decisions.
+    bonus_defence: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0, server_default="0"
+    )
     image_src: Mapped[str | None] = mapped_column(String(255), nullable=True)
+
     is_active: Mapped[bool] = mapped_column(
         Boolean, nullable=False, default=True, server_default="true"
     )

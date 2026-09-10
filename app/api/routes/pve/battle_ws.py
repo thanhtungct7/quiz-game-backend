@@ -79,7 +79,7 @@ async def _dispatch(user: User, websocket: WebSocket, raw: str) -> None:
                 await _invalid(websocket)
                 return
             await engine.submit_answer(
-                user.id, websocket, answer.token, answer.option_id
+                user.id, websocket, answer.token, answer.answer_ids
             )
 
         case ClientEvent.SKILL_USE:

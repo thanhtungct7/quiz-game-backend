@@ -21,6 +21,7 @@ from app.repository.content.topic_repository import TopicRepository
 from app.repository.content.unit_repository import UnitRepository
 from app.repository.duo.duo_match_repository import DuoMatchRepository
 from app.repository.duo.duo_rating_repository import DuoRatingRepository
+from app.repository.game.achievement_repository import AchievementRepository
 from app.repository.game.activity_repository import ActivityRepository
 from app.repository.game.catalog_repository import CatalogRepository
 from app.repository.game.game_profile_repository import GameProfileRepository
@@ -44,6 +45,7 @@ from app.services.auth.user_service import UserService
 from app.services.content.course_content_service import CourseContentService
 from app.services.content.quiz_service import QuizService
 from app.services.duo.duo_service import DuoService
+from app.services.game.achievement_service import AchievementService
 from app.services.game.game_service import GameService
 from app.services.game.lesson_rewards import LessonRewardService
 from app.services.profile.profile_service import ProfileService
@@ -201,7 +203,9 @@ def get_progress_service(db: DatabaseSession) -> ProgressService:
         units=UnitRepository(db),
         courses=CourseRepository(db),
         rewards=LessonRewardService(
-            profiles=GameProfileRepository(db), activity=ActivityRepository(db)
+            profiles=GameProfileRepository(db),
+            activity=ActivityRepository(db),
+            achievements=AchievementService(AchievementRepository(db)),
         ),
     )
 
@@ -220,10 +224,23 @@ def get_game_service(db: DatabaseSession) -> GameService:
 
 
 def get_profile_service(db: DatabaseSession) -> ProfileService:
-    """One repository, not the eight `GameService` needs: an aggregated profile
-    is a read across a fixed set of tables, and pulling in the other services
-    would drag their write paths along with them."""
-    return ProfileService(stats=ProfileStatsRepository(db), config=settings)
+    """Three repositories, not the eight `GameService` needs: an aggregated
+    profile is a read across a fixed set of tables, and pulling in the other
+    services would drag their write paths along with them.
+
+    The catalog and item repositories are here for the combat stat block, and
+    are the same two a match resolves its build from. Repositories rather than
+    `GameService` or `LoadoutBuilder` on purpose -- both of those write, and
+    this endpoint must not.
+    """
+    return ProfileService(
+        stats=ProfileStatsRepository(db),
+        catalog=CatalogRepository(db),
+        items=ItemRepository(db),
+        achievements=AchievementService(AchievementRepository(db)),
+        config=settings,
+    )
+
 
 
 def get_duo_service(db: DatabaseSession) -> DuoService:

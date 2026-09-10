@@ -1,7 +1,7 @@
 import random
 
 from app.core.exceptions import LessonNotFoundError, UnitNotFoundError
-from app.models.content.challenge import ChallengeDifficulty, ChallengeType
+from app.models.content.challenge import Challenge, ChallengeDifficulty, ChallengeType
 from app.repository.content.challenge_repository import ChallengeRepository
 from app.repository.content.lesson_repository import LessonRepository
 from app.repository.content.unit_repository import UnitRepository
@@ -132,9 +132,10 @@ class QuizService:
         do without a graded answer -- revealing the solution when the clock
         runs out, and telling a REMOVE_OPTIONS skill which options are wrong.
 
-        Challenges with no correct option are dropped rather than served as
-        unanswerable rounds, and ORDER ones with them -- a battle round is a
-        single tap, which cannot express a word order.
+        ORDER challenges are drawn like any other: a battle round is answered
+        on the same word-tile surface the lesson screen uses, and whole lessons
+        ("Ghép câu") hold nothing else. Only challenges with no answer at all
+        are dropped, rather than served as unanswerable rounds.
         """
         lesson = await self.lessons.get_by_id(lesson_id)
         if lesson is None:
@@ -153,9 +154,7 @@ class QuizService:
         for challenge in pool:
             if len(questions) == count:
                 break
-            if challenge.type is ChallengeType.ORDER:
-                continue
-            correct_ids = [option.id for option in challenge.options if option.correct]
+            correct_ids = _battle_answer_key(challenge)
             if not correct_ids:
                 continue
             questions.append(to_public_challenge(challenge, rng))
@@ -190,3 +189,20 @@ class QuizService:
         selected = rng.sample(pool, min(count, len(pool)))
         rng.shuffle(selected)
         return [to_public_challenge(challenge, rng) for challenge in selected]
+
+
+def _battle_answer_key(challenge: Challenge) -> list[str]:
+    """The option ids a battle grades this challenge against.
+
+    For a single-choice challenge that is its correct options -- normally one,
+    and order means nothing. For an ORDER challenge every tile is flagged
+    correct, so a set of them says nothing at all; the key carries the solution
+    *in order* instead, which is what `order_index` spells out. An empty list
+    either way means the challenge has no answer to grade against and must not
+    be served.
+    """
+    if challenge.type is ChallengeType.ORDER:
+        return [
+            option.id for option in sorted(challenge.options, key=lambda o: o.order_index)
+        ]
+    return [option.id for option in challenge.options if option.correct]

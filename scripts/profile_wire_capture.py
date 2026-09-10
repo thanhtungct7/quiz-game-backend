@@ -23,14 +23,22 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from app.models.game.achievement import AchievementCategory
 from app.schemas.game.game import EnergyRead
 from app.schemas.profile.profile import (
+    AchievementListRead,
+    AchievementProgressRead,
+    AchievementRead,
+    CombatBreakdownRead,
+    CombatStatsRead,
     LearningStatsRead,
     PublicProfileRead,
     PvpStatsRead,
     SelfProfileRead,
+    StatSourceRead,
 )
 from app.services.game.cefr import CefrBand
+from app.services.game.combat_stats import StatSourceKind
 from app.services.game.season import RankTier
 
 # The app repository sits beside this one; the fixture lives with the test that
@@ -66,6 +74,138 @@ def _learning() -> LearningStatsRead:
     )
 
 
+def _combat() -> CombatStatsRead:
+    """A mage in full gear. The four numbers the card draws as bars."""
+    return CombatStatsRead(hp=118, atk=27, defence=6, mana=14, damage_permille=1_350)
+
+
+def _featured() -> list[AchievementRead]:
+    """The three most recent, which is exactly what the overview tab has room for."""
+    return [
+        AchievementRead(
+            code="STREAK_7",
+            name="Trọn một tuần",
+            description="Học bảy ngày liên tiếp.",
+            category=AchievementCategory.LEARNING,
+            icon_code="FLAME",
+            unlocked_at=JOINED_AT,
+        ),
+        AchievementRead(
+            code="PVP_WINS_10",
+            name="Tay đấu",
+            description="Thắng mười trận đấu.",
+            category=AchievementCategory.PVP,
+            icon_code="SWORD",
+            unlocked_at=JOINED_AT,
+        ),
+        AchievementRead(
+            code="LEVEL_20",
+            name="Lão luyện",
+            description="Đạt cấp 20.",
+            category=AchievementCategory.PROGRESSION,
+            icon_code="LEVEL",
+            unlocked_at=JOINED_AT,
+        ),
+    ]
+
+
+def combat_breakdown() -> CombatBreakdownRead:
+    """`GET /profile/me/combat` -- where each of the four numbers came from.
+
+    The lines add up to the total exactly, including the clipped equipment
+    line; the fixture keeps that property so the client's modal can be checked
+    against it.
+    """
+    return CombatBreakdownRead(
+        total=_combat(),
+        sources=[
+            StatSourceRead(
+                kind=StatSourceKind.CLASS,
+                code="MAGE",
+                label="Pháp sư",
+                hp=90,
+                atk=22,
+                defence=0,
+                mana=10,
+            ),
+            StatSourceRead(
+                kind=StatSourceKind.EQUIPMENT,
+                code="STAFF_EMBER",
+                label="Trượng Than Hồng",
+                hp=0,
+                atk=5,
+                defence=2,
+                mana=2,
+            ),
+            StatSourceRead(
+                kind=StatSourceKind.EQUIPMENT,
+                code="ROBE_SILK",
+                label="Áo choàng Lụa",
+                hp=20,
+                atk=0,
+                defence=4,
+                mana=2,
+            ),
+            StatSourceRead(
+                kind=StatSourceKind.STREAK,
+                code="STREAK",
+                label="Chuỗi ngày",
+                hp=8,
+                atk=0,
+                defence=0,
+                mana=0,
+            ),
+        ],
+    )
+
+
+def achievements() -> AchievementListRead:
+    """`GET /profile/me/achievements` -- the whole shelf, earned and not.
+
+    One of each state, because the tab draws them differently: unlocked with a
+    date, in progress with a bar, and untouched at zero.
+    """
+    return AchievementListRead(
+        unlocked_count=7,
+        total=21,
+        items=[
+            AchievementProgressRead(
+                code="LEVEL_20",
+                name="Lão luyện",
+                description="Đạt cấp 20.",
+                category=AchievementCategory.PROGRESSION,
+                icon_code="LEVEL",
+                unlocked_at=JOINED_AT,
+                threshold=20,
+                current=20,
+                unlocked=True,
+            ),
+            AchievementProgressRead(
+                code="LEVEL_50",
+                name="Bậc thầy",
+                description="Đạt cấp 50.",
+                category=AchievementCategory.PROGRESSION,
+                icon_code="CROWN",
+                unlocked_at=None,
+                threshold=50,
+                current=34,
+                unlocked=False,
+            ),
+            AchievementProgressRead(
+                code="BATTLES_WON_25",
+                name="Thợ săn quái",
+                description="Hạ hai mươi lăm con quái.",
+                category=AchievementCategory.PVE,
+                icon_code="SKULL",
+                unlocked_at=None,
+                threshold=25,
+                current=0,
+                unlocked=False,
+            ),
+        ],
+    )
+
+
 def public_card() -> PublicProfileRead:
     """Another player, as a leaderboard row or lobby opens them."""
     return PublicProfileRead(
@@ -82,6 +222,9 @@ def public_card() -> PublicProfileRead:
         best_day_streak=40,
         pvp=_pvp(),
         learning=_learning(),
+        combat=_combat(),
+        featured_achievements=_featured(),
+        total_achievements_unlocked=7,
     )
 
 
@@ -135,6 +278,11 @@ def new_account_card() -> SelfProfileRead:
             total_attempts=0,
             accuracy=0.0,
         ),
+        # No class picked and nothing equipped: the baseline every account
+        # fights on before it has chosen anything.
+        combat=CombatStatsRead(hp=100, atk=20, defence=0, mana=0, damage_permille=1_000),
+        featured_achievements=[],
+        total_achievements_unlocked=0,
         email="new@example.com",
         has_uploaded_avatar=False,
         gold=0,
@@ -153,6 +301,8 @@ def build() -> dict[str, Any]:
         "SELF": self_card().model_dump(mode="json"),
         "PUBLIC": public_card().model_dump(mode="json"),
         "SELF_NEW_ACCOUNT": new_account_card().model_dump(mode="json"),
+        "COMBAT_BREAKDOWN": combat_breakdown().model_dump(mode="json"),
+        "ACHIEVEMENTS": achievements().model_dump(mode="json"),
     }
 
 

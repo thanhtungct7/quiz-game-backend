@@ -209,3 +209,62 @@ async def test_generate_for_unit_returns_one_stage_set_per_lesson() -> None:
     assert by_lesson["lesson-a"].lesson_title == "Stage A"
     assert by_lesson["lesson-a"].returned_count == 1
     assert by_lesson["lesson-b"].returned_count == 2
+
+
+def _make_ordered_challenge(challenge_id: str, lesson_id: str, words: list[str]) -> Challenge:
+    """A "ghép câu" challenge: every tile belongs in the answer, and the answer
+    is the order `order_index` spells out."""
+    return Challenge(
+        id=challenge_id,
+        lesson_id=lesson_id,
+        type=ChallengeType.ORDER,
+        question="Sắp xếp thành câu đúng",
+        difficulty=ChallengeDifficulty.EASY,
+        topic_id=None,
+        order_index=1,
+        options=[
+            ChallengeOption(
+                id=f"{challenge_id}-w{position}",
+                text=word,
+                correct=True,
+                order_index=position + 1,
+            )
+            for position, word in enumerate(words)
+        ],
+    )
+
+
+@pytest.mark.asyncio
+async def test_generate_for_battle_serves_ghep_cau_lessons() -> None:
+    """A lesson of nothing but ORDER challenges is a fightable gate.
+
+    Every third lesson on the learn path is one, and the path is sequential --
+    a battle that drew nothing from them would shut every lesson behind them.
+    """
+    lesson = Lesson(id="lesson-order", unit_id="unit-1", title="Ghép câu 1", order_index=2)
+    challenges = [
+        _make_ordered_challenge("o0", lesson.id, ["Tôi", "phải", "đi", "ngủ"]),
+        _make_ordered_challenge("o1", lesson.id, ["Cô", "ấy", "hát", "hay"]),
+    ]
+    service = build_service(challenges, [lesson])
+
+    drawn = await service.generate_for_battle(lesson.id, count=20)
+
+    assert len(drawn.questions) == 2
+    assert {q.type for q in drawn.questions} == {ChallengeType.ORDER}
+    # A sequence, not a set: for ORDER the key is the sentence itself.
+    assert drawn.answer_key["o0"] == ["o0-w0", "o0-w1", "o0-w2", "o0-w3"]
+
+
+@pytest.mark.asyncio
+async def test_generate_for_battle_drops_a_challenge_with_no_answer() -> None:
+    lesson = Lesson(id="lesson-1", unit_id="unit-1", title="Lesson 1", order_index=1)
+    answerable = _make_challenge("c0", lesson.id)
+    unanswerable = _make_challenge("c1", lesson.id)
+    for option in unanswerable.options:
+        option.correct = False
+    service = build_service([answerable, unanswerable], [lesson])
+
+    drawn = await service.generate_for_battle(lesson.id, count=20)
+
+    assert [q.id for q in drawn.questions] == ["c0"]

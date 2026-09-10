@@ -5,10 +5,9 @@ from app.repository.game.catalog_repository import CatalogRepository
 from app.repository.game.game_profile_repository import GameProfileRepository
 from app.repository.game.item_repository import ItemRepository
 from app.repository.game.user_skill_repository import UserSkillRepository
-from app.services.game.combat import MAX_HP, PERMILLE_ONE, streak_buff
+from app.services.game.combat_stats import ClassPart, class_part, item_part, resolve
 from app.services.game.leveling import level_for_exp
 from app.services.game.loadout import EquippedSkill, PlayerLoadout
-from app.services.game.loot import StatBonus, total_bonus
 from app.services.game.starters import ensure_starters
 
 
@@ -42,15 +41,11 @@ class LoadoutBuilder:
         """
         profile = await self.profiles.get_by_user(user_id)
 
-        max_hp = MAX_HP
-        damage_permille = PERMILLE_ONE
-        starting_mana = 0
+        base: ClassPart | None = None
         if profile is not None and profile.class_code is not None:
             class_row = await self.catalog.get_class(profile.class_code)
             if class_row is not None and class_row.is_active:
-                max_hp = class_row.max_hp
-                damage_permille = class_row.damage_permille
-                starting_mana = class_row.starting_mana
+                base = class_part(class_row)
 
         rows = await self.skills.loadout(user_id)
         if not rows:
@@ -81,30 +76,30 @@ class LoadoutBuilder:
             if skill.is_active and slot.slot_index < LOADOUT_SLOTS
         ]
 
-        # Equipment and the daily streak are folded in here, so the engine only
-        # ever reads three finished numbers and never has to know where they
-        # came from.
-        gear = total_bonus(
-            [
-                StatBonus(
-                    max_hp=item.bonus_max_hp,
-                    damage_permille=item.bonus_damage_permille,
-                    starting_mana=item.bonus_starting_mana,
-                )
+        # Class, equipment and the daily streak are added up by
+        # `combat_stats.resolve`, which the profile screen also calls. Sharing
+        # the arithmetic rather than repeating it is what makes the numbers on
+        # a player's card the numbers they actually fight on.
+        day_streak = profile.day_streak if profile is not None else 0
+        build = resolve(
+            base=base,
+            equipment=[
+                item_part(item)
                 for _worn, item in await self.items.equipment(user_id)
                 if item.is_active
-            ]
+            ],
+            day_streak=day_streak,
         )
-        day_streak = profile.day_streak if profile is not None else 0
-        buff = streak_buff(day_streak)
 
         return PlayerLoadout(
             user_id=user_id,
             level=level_for_exp(profile.total_exp) if profile is not None else 1,
             class_code=profile.class_code if profile is not None else None,
-            max_hp=max_hp + gear.max_hp + buff.bonus_max_hp,
-            starting_mana=starting_mana + gear.starting_mana + buff.bonus_starting_mana,
-            damage_permille=damage_permille + gear.damage_permille,
+            max_hp=build.max_hp,
+            starting_mana=build.starting_mana,
+            damage_permille=build.damage_permille,
+            defence=build.defence,
             day_streak=day_streak,
             skills=tuple(equipped),
         )
+

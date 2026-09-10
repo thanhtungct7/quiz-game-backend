@@ -5,12 +5,20 @@ from datetime import UTC, datetime
 import pytest
 from fastapi import HTTPException, status
 
-from app.api.routes.profile.profile import read_my_profile, read_public_profile
+from app.api.routes.profile.profile import (
+    read_my_achievements,
+    read_my_combat_breakdown,
+    read_my_profile,
+    read_public_profile,
+)
 from app.core.exceptions import UserNotFoundError
 from app.main import app
 from app.models.auth.user import User
 from app.schemas.game.game import EnergyRead
 from app.schemas.profile.profile import (
+    AchievementListRead,
+    CombatBreakdownRead,
+    CombatStatsRead,
     LearningStatsRead,
     PublicProfileRead,
     PvpStatsRead,
@@ -56,6 +64,7 @@ def _public_card(user_id: str = "user-1") -> PublicProfileRead:
             total_attempts=0,
             accuracy=0.0,
         ),
+        combat=CombatStatsRead(hp=100, atk=20, defence=0, mana=0, damage_permille=1000),
     )
 
 
@@ -63,6 +72,8 @@ class FakeProfileService:
     def __init__(self, error: Exception | None = None) -> None:
         self.error = error
         self.public_calls: list[str] = []
+        self.combat_calls: list[str] = []
+        self.achievement_calls: list[str] = []
 
     async def get_self(self, user_id: str) -> SelfProfileRead:
         if self.error is not None:
@@ -87,6 +98,18 @@ class FakeProfileService:
             raise self.error
         return _public_card(user_id)
 
+    async def get_combat_breakdown(self, user_id: str) -> CombatBreakdownRead:
+        self.combat_calls.append(user_id)
+        if self.error is not None:
+            raise self.error
+        return CombatBreakdownRead(total=_public_card(user_id).combat, sources=[])
+
+    async def get_achievements(self, user_id: str) -> AchievementListRead:
+        self.achievement_calls.append(user_id)
+        if self.error is not None:
+            raise self.error
+        return AchievementListRead(unlocked_count=0, total=0, items=[])
+
 
 # --- routing ---------------------------------------------------------------
 
@@ -107,6 +130,28 @@ def test_me_is_declared_before_the_user_id_route() -> None:
 def test_the_profile_router_is_mounted() -> None:
     assert f"{PROFILE_PREFIX}/me" in app.openapi()["paths"]
     assert f"{PROFILE_PREFIX}/{{user_id}}" in app.openapi()["paths"]
+    assert f"{PROFILE_PREFIX}/me/combat" in app.openapi()["paths"]
+    assert f"{PROFILE_PREFIX}/me/achievements" in app.openapi()["paths"]
+
+
+async def test_the_achievement_list_is_read_for_the_authenticated_id_only() -> None:
+    """Two segments, so it cannot collide with `/{user_id}` -- and no user id
+    is accepted, because this is the one read that syncs."""
+    service = FakeProfileService()
+
+    await read_my_achievements(_make_user(), service)  # type: ignore[arg-type]
+
+    assert service.achievement_calls == ["user-1"]
+
+
+async def test_the_combat_breakdown_is_read_for_the_authenticated_id_only() -> None:
+    """No user id in the path, and none accepted: the totals ride along on
+    every card, but the itemised version is a player's own build."""
+    service = FakeProfileService()
+
+    await read_my_combat_breakdown(_make_user(), service)  # type: ignore[arg-type]
+
+    assert service.combat_calls == ["user-1"]
 
 
 # --- reading your own ------------------------------------------------------

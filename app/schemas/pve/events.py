@@ -18,7 +18,7 @@ instant on the wire is an absolute millisecond stamp on the server's own clock
 from enum import StrEnum
 from typing import Any
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 from app.models.game.game_item import ItemRarity
 from app.models.game.skill import SkillEffect
@@ -89,8 +89,29 @@ class BattleStartPayload(BaseModel):
 
 
 class AnswerSubmitPayload(BaseModel):
+    """One answer, in whichever of the two shapes the question takes.
+
+    A single-choice question is answered with `option_id`; an ORDER one with
+    `option_ids`, the word tiles in the order they were laid down. Exactly one
+    of the two is expected, and `answer_ids` normalises them into the sequence
+    the engine grades -- a single choice being a sequence of one.
+    """
+
     token: str = Field(min_length=1, max_length=36)
-    option_id: str = Field(min_length=1, max_length=36)
+    option_id: str | None = Field(default=None, min_length=1, max_length=36)
+    option_ids: list[str] | None = Field(default=None, min_length=1, max_length=32)
+
+    @property
+    def answer_ids(self) -> list[str]:
+        if self.option_ids is not None:
+            return self.option_ids
+        return [self.option_id] if self.option_id is not None else []
+
+    @model_validator(mode="after")
+    def _exactly_one_shape(self) -> "AnswerSubmitPayload":
+        if (self.option_id is None) == (self.option_ids is None):
+            raise ValueError("send either option_id or option_ids, not both")
+        return self
 
 
 class SkillUsePayload(BaseModel):
@@ -194,9 +215,17 @@ class BlowRead(BaseModel):
 
 
 class AnswerResultData(BaseModel):
+    """What one answer did.
+
+    `option_ids` is what the player submitted, a sequence for an ORDER question
+    and a single choice for the rest; `option_id` repeats the single choice on
+    its own and is null for ORDER, where no one tile is "the" answer.
+    """
+
     token: str
     correct: bool
-    option_id: str
+    option_id: str | None
+    option_ids: list[str]
     elapsed_ms: int
     correct_option_ids: list[str]
     explanation: str | None

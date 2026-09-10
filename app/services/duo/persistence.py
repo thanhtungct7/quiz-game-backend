@@ -23,6 +23,7 @@ from app.repository.content.lesson_repository import LessonRepository
 from app.repository.content.unit_repository import UnitRepository
 from app.repository.duo.duo_match_repository import DuoMatchRepository
 from app.repository.duo.duo_rating_repository import DuoRatingRepository
+from app.repository.game.achievement_repository import AchievementRepository
 from app.repository.game.activity_repository import ActivityRepository
 from app.repository.game.catalog_repository import CatalogRepository
 from app.repository.game.game_profile_repository import GameProfileRepository
@@ -36,6 +37,7 @@ from app.services.content.quiz_service import QuizService
 from app.services.duo import rating as elo
 from app.services.duo.scoring import MatchOutcome
 from app.services.duo.state import LiveMatch, MatchSettings
+from app.services.game.achievement_service import AchievementService
 from app.services.game.energy_service import EnergyService
 from app.services.game.loadout import PlayerLoadout
 from app.services.game.loadout_builder import LoadoutBuilder
@@ -252,6 +254,7 @@ class DatabaseDuoPersistence:
                 items=ItemRepository(db),
                 seasons=SeasonRepository(db),
                 activity=ActivityRepository(db),
+                achievements=AchievementService(AchievementRepository(db)),
             ).settle_match(
                 match_id=match.match_id,
                 rewards=_reward_inputs(match, result),

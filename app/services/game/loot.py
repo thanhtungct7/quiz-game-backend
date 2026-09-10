@@ -4,10 +4,12 @@ Pure functions with no I/O. The random source is injected rather than taken
 from the module, so a seeded `Random` makes every distribution here testable --
 the same reason `QuizService` takes its own RNG.
 
-Items only ever move the same three numbers a class moves: maximum health, the
-damage multiplier and starting mana. That is a hard design rule, not a current
-limitation: an item that needed a fourth knob would mean a new branch inside
-the engine, and then every future item would be an engine change.
+Items only ever move the same numbers a class moves: maximum health, the damage
+multiplier, starting mana and defence. That is a hard design rule, not a current
+limitation -- but the rule is about *branches*, not about how many numbers there
+are. Defence was added as a fourth knob precisely because `resolve_blow` already
+took a `defender_flat_reduction` and needed no new branch to read it. An item
+that wanted something the engine cannot already resolve is still refused.
 """
 
 from dataclasses import dataclass
@@ -36,6 +38,10 @@ WIN_RARITY_WEIGHTS: dict[ItemRarity, int] = {
 MAX_BONUS_HP = 20
 MAX_BONUS_DAMAGE_PERMILLE = 150
 MAX_BONUS_STARTING_MANA = 15
+# Tighter than it looks, and deliberately so: defence is subtracted flat, and
+# the weakest monster in the catalog swings for 8. A warrior in full armour
+# stands at 3 + 2, which still lets a slime through for 3.
+MAX_BONUS_DEFENCE = 2
 
 
 @dataclass(frozen=True)
@@ -53,6 +59,7 @@ class StatBonus:
     max_hp: int = 0
     damage_permille: int = 0
     starting_mana: int = 0
+    defence: int = 0
 
     def capped(self) -> "StatBonus":
         """The same bonus, clamped to what equipment is allowed to contribute."""
@@ -60,6 +67,7 @@ class StatBonus:
             max_hp=_clamp(self.max_hp, MAX_BONUS_HP),
             damage_permille=_clamp(self.damage_permille, MAX_BONUS_DAMAGE_PERMILLE),
             starting_mana=_clamp(self.starting_mana, MAX_BONUS_STARTING_MANA),
+            defence=_clamp(self.defence, MAX_BONUS_DEFENCE),
         )
 
 
@@ -92,4 +100,6 @@ def total_bonus(bonuses: list[StatBonus]) -> StatBonus:
         max_hp=sum(bonus.max_hp for bonus in bonuses),
         damage_permille=sum(bonus.damage_permille for bonus in bonuses),
         starting_mana=sum(bonus.starting_mana for bonus in bonuses),
+        defence=sum(bonus.defence for bonus in bonuses),
     ).capped()
+

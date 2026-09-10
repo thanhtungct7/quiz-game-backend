@@ -132,6 +132,48 @@ def _question(index: int) -> ChallengePublicRead:
     )
 
 
+def _ordered_question(index: int, words: tuple[str, ...]) -> ChallengePublicRead:
+    """A "ghép câu" question, laid out the way the server serves one.
+
+    The tiles arrive shuffled and their `order_index` is a display position:
+    the solution is `q{index}-w0, q{index}-w1, ...`, which is the order the
+    words are given here and never the order they are pushed in.
+    """
+    challenge_id = f"q{index}"
+    options = [
+        ChallengeOptionPublicRead(
+            id=f"{challenge_id}-w{position}",
+            text=word,
+            order_index=position + 1,
+            image_src=None,
+            audio_src=None,
+        )
+        for position, word in enumerate(words)
+    ]
+    # Served back to front, so answering in the order the tiles arrive is wrong.
+    shuffled = list(reversed(options))
+    return ChallengePublicRead(
+        id=challenge_id,
+        lesson_id=LESSON,
+        type=ChallengeType.ORDER,
+        question=f"Ghép câu {index}",
+        difficulty=ChallengeDifficulty.EASY,
+        topic_id=None,
+        order_index=index,
+        passage=None,
+        options=[
+            ChallengeOptionPublicRead(
+                id=option.id,
+                text=option.text,
+                order_index=position,
+                image_src=None,
+                audio_src=None,
+            )
+            for position, option in enumerate(shuffled, start=1)
+        ],
+    )
+
+
 class FakePersistence:
     def __init__(
         self,
@@ -140,7 +182,11 @@ class FakePersistence:
         monster: MonsterProfile | None = None,
         loadout: PlayerLoadout | None = None,
         reject: BattleStartRejected | None = None,
+        words: tuple[str, ...] | None = None,
     ) -> None:
+        # Set to serve "ghép câu" rounds instead of single-choice ones: a whole
+        # lesson of them is what the learn path's every third gate is made of.
+        self.words = words
         self.question_count = question_count
         self.monster = monster or _monster()
         self.loadout = loadout
@@ -148,7 +194,7 @@ class FakePersistence:
         self.created: list[LiveBattle] = []
         self.saved: list[tuple[LiveBattle, BattleResult]] = []
         # Every answer that reached the study path, in order.
-        self.graded: list[tuple[str, str, str]] = []
+        self.graded: list[tuple[str, str, list[str]]] = []
         # Every lesson the engine asked to be marked finished, in order.
         self.completed: list[tuple[str, str]] = []
         self.progress = LessonProgressChange(
@@ -159,24 +205,36 @@ class FakePersistence:
         await asyncio.sleep(0)
         if self.reject is not None:
             return self.reject
-        questions = [_question(index) for index in range(self.question_count)]
+        if self.words is not None:
+            questions = [
+                _ordered_question(index, self.words) for index in range(self.question_count)
+            ]
+            # A sequence, not a set: for ORDER the key *is* the sentence.
+            answer_key = {
+                q.id: [f"{q.id}-w{position}" for position in range(len(self.words))]
+                for q in questions
+            }
+        else:
+            questions = [_question(index) for index in range(self.question_count)]
+            answer_key = {q.id: [f"{q.id}-correct"] for q in questions}
         return BattleSetup(
             monster=self.monster,
             loadout=self.loadout or default_loadout(user_id),
             questions=QuizSetWithAnswers(
                 questions=questions,
-                answer_key={q.id: [f"{q.id}-correct"] for q in questions},
+                answer_key=answer_key,
                 explanations={q.id: f"because {q.id}" for q in questions},
             ),
             lesson_title="Present simple",
         )
 
     async def check_answer(
-        self, user_id: str, challenge_id: str, option_id: str
+        self, user_id: str, challenge_id: str, option_ids: list[str]
     ) -> AnswerCheckResult | None:
         # A real grade hits PostgreSQL and suspends here.
         await asyncio.sleep(0)
-        self.graded.append((user_id, challenge_id, option_id))
+        option_id = option_ids[0]
+        self.graded.append((user_id, challenge_id, list(option_ids)))
         return AnswerCheckResult(
             challenge_id=challenge_id,
             selected_option_id=option_id,
@@ -268,7 +326,7 @@ async def _answer(
         user.id,
         socket,  # type: ignore[arg-type]
         pushed["token"],
-        f"{question_id}-{suffix}",
+        [f"{question_id}-{suffix}"],
     )
     await _settle()
 
@@ -421,9 +479,9 @@ async def test_every_answer_goes_through_the_study_path() -> None:
     await _answer(engine, user, socket, correct=True)
     await _answer(engine, user, socket, correct=False)
 
-    assert [option for _user_id, _challenge, option in persistence.graded] == [
-        "q0-correct",
-        "q1-wrong",
+    assert [options for _user_id, _challenge, options in persistence.graded] == [
+        ["q0-correct"],
+        ["q1-wrong"],
     ]
     assert all(user_id == user.id for user_id, _, _ in persistence.graded)
     await engine.leave_battle(user.id)
@@ -443,7 +501,7 @@ async def test_the_engine_grades_the_blow_itself_rather_than_waiting() -> None:
         user.id,
         socket,
         pushed["token"],
-        "q0-correct",  # type: ignore[arg-type]
+        ["q0-correct"],
     )
 
     # Resolved on the same coroutine, before the study path has run at all.
@@ -617,8 +675,8 @@ async def test_the_same_token_cannot_be_answered_twice() -> None:
     socket, user = await _start(engine)
 
     token = _current_question(socket)["token"]
-    await engine.submit_answer(user.id, socket, token, "q0-correct")  # type: ignore[arg-type]
-    await engine.submit_answer(user.id, socket, token, "q0-wrong")  # type: ignore[arg-type]
+    await engine.submit_answer(user.id, socket, token, ["q0-correct"])  # type: ignore[arg-type]
+    await engine.submit_answer(user.id, socket, token, ["q0-wrong"])  # type: ignore[arg-type]
 
     assert ErrorCode.QUESTION_CLOSED.value in socket.errors()
     assert len(socket.all_of(ServerEvent.ANSWER_RESULT)) == 1
@@ -629,7 +687,7 @@ async def test_a_stale_token_is_rejected() -> None:
     engine = _engine()
     socket, user = await _start(engine)
 
-    await engine.submit_answer(user.id, socket, "not-a-token", "q0-correct")  # type: ignore[arg-type]
+    await engine.submit_answer(user.id, socket, "not-a-token", ["q0-correct"])  # type: ignore[arg-type]
 
     assert ErrorCode.QUESTION_CLOSED.value in socket.errors()
     await engine.leave_battle(user.id)
@@ -640,9 +698,127 @@ async def test_an_option_from_another_question_is_rejected() -> None:
     socket, user = await _start(engine)
 
     token = _current_question(socket)["token"]
-    await engine.submit_answer(user.id, socket, token, "q3-correct")  # type: ignore[arg-type]
+    await engine.submit_answer(user.id, socket, token, ["q3-correct"])  # type: ignore[arg-type]
 
     assert ErrorCode.INVALID_OPTION.value in socket.errors()
+    await engine.leave_battle(user.id)
+
+
+# --- ghép câu --------------------------------------------------------------
+#
+# Every third gate of the learn path is a lesson of nothing but ORDER
+# challenges, so a battle that cannot fight one is a battle that cannot open
+# the gate -- and the path is sequential, so every lesson behind it stays shut.
+
+
+def _sentence(socket: FakeWebSocket) -> tuple[str, list[str]]:
+    """The open question's token and its tiles in the solution's order."""
+    pushed = _current_question(socket)
+    question_id = pushed["question"]["id"]
+    tile_count = len(pushed["question"]["options"])
+    return pushed["token"], [f"{question_id}-w{position}" for position in range(tile_count)]
+
+
+async def test_a_sentence_in_the_right_order_lands_a_blow() -> None:
+    engine = _engine(FakePersistence(words=("Tôi", "phải", "đi", "ngủ")))
+    socket, user = await _start(engine)
+
+    token, solution = _sentence(socket)
+    await engine.submit_answer(user.id, socket, token, solution)  # type: ignore[arg-type]
+    await _settle()
+
+    result = socket.first(ServerEvent.ANSWER_RESULT)
+    assert result is not None
+    assert result["correct"] is True
+    assert result["blow"] is not None
+    # No single tile is "the" answer, and the whole sentence is what was sent.
+    assert result["option_id"] is None
+    assert result["option_ids"] == solution
+    await engine.leave_battle(user.id)
+
+
+async def test_the_same_words_in_the_wrong_order_are_wrong() -> None:
+    engine = _engine(FakePersistence(words=("Tôi", "phải", "đi", "ngủ")))
+    socket, user = await _start(engine)
+
+    token, solution = _sentence(socket)
+    swapped = [solution[1], solution[0], *solution[2:]]
+    await engine.submit_answer(user.id, socket, token, swapped)  # type: ignore[arg-type]
+    await _settle()
+
+    result = socket.first(ServerEvent.ANSWER_RESULT)
+    assert result is not None
+    assert result["correct"] is False
+    assert result["blow"] is None
+    await engine.leave_battle(user.id)
+
+
+async def test_two_tiles_of_the_same_word_are_interchangeable() -> None:
+    """Graded on the words, not the ids -- the rule the study path grades by.
+
+    "Càng ... càng ..." spells the same sentence whichever of the two identical
+    tiles was laid first, and marking that wrong would be marking a right
+    answer wrong.
+    """
+    engine = _engine(FakePersistence(words=("càng", "học", "càng", "giỏi")))
+    socket, user = await _start(engine)
+
+    token, solution = _sentence(socket)
+    # The two "càng" tiles, w0 and w2, swapped.
+    same_sentence = [solution[2], solution[1], solution[0], solution[3]]
+    await engine.submit_answer(user.id, socket, token, same_sentence)  # type: ignore[arg-type]
+    await _settle()
+
+    result = socket.first(ServerEvent.ANSWER_RESULT)
+    assert result is not None
+    assert result["correct"] is True
+    await engine.leave_battle(user.id)
+
+
+async def test_a_half_built_sentence_is_refused_rather_than_graded() -> None:
+    """A partial sentence is not an answer, so it must not cost the combo."""
+    engine = _engine(FakePersistence(words=("Tôi", "phải", "đi", "ngủ")))
+    socket, user = await _start(engine)
+
+    token, solution = _sentence(socket)
+    await engine.submit_answer(user.id, socket, token, solution[:2])  # type: ignore[arg-type]
+    await _settle()
+
+    assert ErrorCode.INVALID_OPTION.value in socket.errors()
+    assert socket.all_of(ServerEvent.ANSWER_RESULT) == []
+    # The question is still open, so the sentence can be finished.
+    await engine.submit_answer(user.id, socket, token, solution)  # type: ignore[arg-type]
+    await _settle()
+    assert len(socket.all_of(ServerEvent.ANSWER_RESULT)) == 1
+    await engine.leave_battle(user.id)
+
+
+async def test_a_tile_laid_twice_is_refused() -> None:
+    engine = _engine(FakePersistence(words=("Tôi", "phải", "đi", "ngủ")))
+    socket, user = await _start(engine)
+
+    token, solution = _sentence(socket)
+    doubled = [solution[0], solution[0], solution[1], solution[2]]
+    await engine.submit_answer(user.id, socket, token, doubled)  # type: ignore[arg-type]
+    await _settle()
+
+    assert ErrorCode.INVALID_OPTION.value in socket.errors()
+    assert socket.all_of(ServerEvent.ANSWER_RESULT) == []
+    await engine.leave_battle(user.id)
+
+
+async def test_the_whole_sentence_reaches_the_study_path() -> None:
+    """The join that makes a fought lesson a studied one: the study path grades
+    the sequence itself, not the first tile of it."""
+    persistence = FakePersistence(words=("Tôi", "phải", "đi", "ngủ"))
+    engine = _engine(persistence)
+    socket, user = await _start(engine)
+
+    token, solution = _sentence(socket)
+    await engine.submit_answer(user.id, socket, token, solution)  # type: ignore[arg-type]
+    await _settle()
+
+    assert persistence.graded == [(user.id, "q0", solution)]
     await engine.leave_battle(user.id)
 
 
@@ -789,6 +965,29 @@ async def test_removing_options_hides_wrong_ones_from_the_caster_only() -> None:
     assert removed == ["q0-wrong"]
     # Never the answer, and never the last wrong option standing.
     assert "q0-correct" not in removed
+    await engine.leave_battle(user.id)
+
+
+async def test_narrowing_a_sentence_is_refused_before_the_mana_is_taken() -> None:
+    """There is no wrong tile to hide: every one of them belongs in the answer.
+
+    Refused rather than cast for nothing, for the same reason casting it with
+    no question on screen is -- the player would pay the mana either way.
+    """
+    user = _user()
+    engine = _engine(
+        FakePersistence(
+            words=("Tôi", "phải", "đi", "ngủ"),
+            loadout=_loadout(user.id, _skill("REVEAL", SkillEffect.REMOVE_OPTIONS, 1)),
+        )
+    )
+    socket, _ = await _start(engine, user)
+
+    await engine.use_skill(user.id, socket, "REVEAL")  # type: ignore[arg-type]
+
+    assert socket.errors() == [ErrorCode.SKILL_NO_TARGET.value]
+    assert socket.all_of(ServerEvent.SKILL_USED) == []
+    assert _battle(engine, user).mana == _battle(engine, user).build.starting_mana
     await engine.leave_battle(user.id)
 
 

@@ -83,11 +83,18 @@ class SubmittedAnswer:
     """
 
     question_id: str
-    option_id: str
+    #: What was submitted: one option for a single-choice question, the word
+    #: tiles in the order they were laid down for an ORDER one.
+    option_ids: list[str]
     elapsed_ms: int
     is_correct: bool
     correct_option_ids: list[str] = field(default_factory=list)
     explanation: str | None = None
+
+    @property
+    def option_id(self) -> str | None:
+        """The single choice, or None when the answer was a sequence."""
+        return self.option_ids[0] if len(self.option_ids) == 1 else None
 
 
 @dataclass

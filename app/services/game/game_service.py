@@ -151,6 +151,7 @@ class GameService:
                 max_hp=row.max_hp,
                 damage_permille=row.damage_permille,
                 starting_mana=row.starting_mana,
+                defence=row.defence,
                 is_current=row.code == profile.class_code,
             )
             for row in await self.catalog.list_classes()
@@ -399,6 +400,7 @@ class GameService:
                 bonus_max_hp=item.bonus_max_hp,
                 bonus_damage_permille=item.bonus_damage_permille,
                 bonus_starting_mana=item.bonus_starting_mana,
+                bonus_defence=item.bonus_defence,
                 quantity=owned.quantity,
                 equipped=item.id in equipped_ids,
             )
@@ -412,6 +414,7 @@ class GameService:
                     max_hp=row.bonus_max_hp,
                     damage_permille=row.bonus_damage_permille,
                     starting_mana=row.bonus_starting_mana,
+                    defence=row.bonus_defence,
                 )
                 for row in rows
                 if row.equipped
@@ -422,7 +425,9 @@ class GameService:
             bonus_max_hp=bonus.max_hp,
             bonus_damage_permille=bonus.damage_permille,
             bonus_starting_mana=bonus.starting_mana,
+            bonus_defence=bonus.defence,
         )
+
 
     async def set_equipment(
         self, user_id: str, requested: dict[EquipmentSlot, str | None]

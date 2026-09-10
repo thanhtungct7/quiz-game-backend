@@ -11,11 +11,14 @@ unlockable-from, and retiring one is done with `is_active = false`.
 
 from dataclasses import dataclass
 
+from app.models.game.achievement import AchievementCategory, AchievementMetric
 from app.models.game.game_item import EquipmentSlot, ItemKind, ItemRarity
 from app.models.game.skill import SkillEffect, SkillUnlockKind
+from app.repository.game.achievement_repository import AchievementRepository
 from app.repository.game.catalog_repository import CatalogRepository
 from app.repository.game.item_repository import ItemRepository
 from app.repository.game.monster_repository import MonsterRepository
+from app.services.game.achievements import AchievementSpec
 
 # A monster that is kept waiting starts hitting harder, so a long lesson
 # cannot be farmed as a safe place to sit. Nine authored rounds is 54 seconds
@@ -37,6 +40,10 @@ class ClassSpec:
     max_hp: int
     damage_permille: int
     starting_mana: int
+    # Flat damage off every incoming blow. Small numbers on purpose: the whole
+    # scale is one-digit, because a monster hits for 8 to 14 and a duo blow
+    # lands around 14, so a single point is already worth something.
+    defence: int
     sort_order: int
 
 
@@ -46,10 +53,14 @@ CLASSES = (
     ClassSpec(
         code=WARRIOR,
         name="Chiến binh",
-        description="Nhiều máu, đòn nhẹ hơn. Sống lâu để thắng bằng độ bền.",
-        max_hp=130,
+        description="Giáp dày, đòn nhẹ hơn. Chịu đòn giỏi để thắng bằng độ bền.",
+        # Health came down from 130 when DEF arrived. The two are the same
+        # resource, and stacking both would have made this the only class worth
+        # picking; defence is what makes a warrior a warrior now, not bulk.
+        max_hp=115,
         damage_permille=900,
         starting_mana=10,
+        defence=3,
         sort_order=1,
     ),
     ClassSpec(
@@ -59,6 +70,7 @@ CLASSES = (
         max_hp=80,
         damage_permille=1250,
         starting_mana=30,
+        defence=0,
         sort_order=2,
     ),
     ClassSpec(
@@ -68,6 +80,7 @@ CLASSES = (
         max_hp=100,
         damage_permille=1050,
         starting_mana=20,
+        defence=1,
         sort_order=3,
     ),
 )
@@ -307,6 +320,7 @@ def _class_row(spec: ClassSpec) -> dict[str, object]:
         "max_hp": spec.max_hp,
         "damage_permille": spec.damage_permille,
         "starting_mana": spec.starting_mana,
+        "defence": spec.defence,
         "sort_order": spec.sort_order,
         "is_active": True,
     }
@@ -365,6 +379,7 @@ class ItemSpec:
     bonus_max_hp: int = 0
     bonus_damage_permille: int = 0
     bonus_starting_mana: int = 0
+    bonus_defence: int = 0
 
 
 # Individually small, and capped again when combined (`loot.total_bonus`).
@@ -411,6 +426,7 @@ ITEMS = (
         rarity=ItemRarity.RARE,
         slot=EquipmentSlot.ARMOR,
         bonus_max_hp=8,
+        bonus_defence=1,
     ),
     ItemSpec(
         code="DRAGON_PLATE",
@@ -420,7 +436,9 @@ ITEMS = (
         slot=EquipmentSlot.ARMOR,
         bonus_max_hp=14,
         bonus_damage_permille=15,
+        bonus_defence=2,
     ),
+
     ItemSpec(
         code="MANA_RING",
         name="Nhẫn mana",
@@ -474,6 +492,7 @@ def _item_row(spec: ItemSpec) -> dict[str, object]:
         "bonus_max_hp": spec.bonus_max_hp,
         "bonus_damage_permille": spec.bonus_damage_permille,
         "bonus_starting_mana": spec.bonus_starting_mana,
+        "bonus_defence": spec.bonus_defence,
         "is_active": True,
     }
 
@@ -482,6 +501,258 @@ async def seed_item_catalog(items: ItemRepository) -> None:
     """Upsert the drop table. Safe to run on every start."""
     for spec in ITEMS:
         await items.upsert_item(spec.code, _item_row(spec))
+
+
+# --- achievements -----------------------------------------------------------
+
+# Thresholds, not events. Each one is a number measured against a counter the
+# system already keeps, so the list can grow at any time and a player already
+# past a threshold unlocks it on their next sync rather than having to earn it
+# again. See `services/game/achievements.py` for what that rules out.
+#
+# Three tiers per axis, spaced so the first is reached in a sitting, the second
+# takes a habit and the third takes months. A tier nobody reaches is not an
+# aspiration, it is a dead row.
+ACHIEVEMENTS = (
+    # --- progression: the level curve itself ---
+    AchievementSpec(
+        code="LEVEL_5",
+        name="Nhập môn",
+        description="Đạt cấp 5.",
+        category=AchievementCategory.PROGRESSION,
+        metric=AchievementMetric.LEVEL,
+        threshold=5,
+        icon_code="LEVEL",
+        sort_order=10,
+    ),
+    AchievementSpec(
+        code="LEVEL_20",
+        name="Lão luyện",
+        description="Đạt cấp 20.",
+        category=AchievementCategory.PROGRESSION,
+        metric=AchievementMetric.LEVEL,
+        threshold=20,
+        icon_code="LEVEL",
+        sort_order=11,
+    ),
+    AchievementSpec(
+        code="LEVEL_50",
+        name="Bậc thầy",
+        description="Đạt cấp 50.",
+        category=AchievementCategory.PROGRESSION,
+        metric=AchievementMetric.LEVEL,
+        threshold=50,
+        icon_code="CROWN",
+        sort_order=12,
+    ),
+    # --- learning: showing up, and what showing up adds up to ---
+    # The first two read `day_streak`, which falls when a day is missed, so
+    # they are a badge for a streak the player is holding right now. The
+    # thirty-day one reads `best_day_streak` instead: a month of study should
+    # not be taken away by one weekend.
+    AchievementSpec(
+        code="STREAK_3",
+        name="Ba ngày liền",
+        description="Học ba ngày liên tiếp.",
+        category=AchievementCategory.LEARNING,
+        metric=AchievementMetric.DAY_STREAK,
+        threshold=3,
+        icon_code="FLAME",
+        sort_order=20,
+    ),
+    AchievementSpec(
+        code="STREAK_7",
+        name="Trọn một tuần",
+        description="Học bảy ngày liên tiếp.",
+        category=AchievementCategory.LEARNING,
+        metric=AchievementMetric.DAY_STREAK,
+        threshold=7,
+        icon_code="FLAME",
+        sort_order=21,
+    ),
+    AchievementSpec(
+        code="STREAK_30",
+        name="Ba mươi ngày",
+        description="Từng giữ chuỗi ba mươi ngày.",
+        category=AchievementCategory.LEARNING,
+        metric=AchievementMetric.BEST_DAY_STREAK,
+        threshold=30,
+        icon_code="FLAME",
+        sort_order=22,
+    ),
+    AchievementSpec(
+        code="MASTERED_50",
+        name="Năm mươi câu",
+        description="Thuộc năm mươi câu hỏi.",
+        category=AchievementCategory.LEARNING,
+        metric=AchievementMetric.CHALLENGES_MASTERED,
+        threshold=50,
+        icon_code="BOOK",
+        sort_order=23,
+    ),
+    AchievementSpec(
+        code="MASTERED_250",
+        name="Vốn từ dày",
+        description="Thuộc hai trăm năm mươi câu hỏi.",
+        category=AchievementCategory.LEARNING,
+        metric=AchievementMetric.CHALLENGES_MASTERED,
+        threshold=250,
+        icon_code="BOOK",
+        sort_order=24,
+    ),
+    AchievementSpec(
+        code="MASTERED_1000",
+        name="Nghìn câu",
+        description="Thuộc một nghìn câu hỏi.",
+        category=AchievementCategory.LEARNING,
+        metric=AchievementMetric.CHALLENGES_MASTERED,
+        threshold=1000,
+        icon_code="BOOK",
+        sort_order=25,
+    ),
+    AchievementSpec(
+        code="ATTEMPTS_500",
+        name="Cần cù",
+        description="Trả lời năm trăm lượt.",
+        category=AchievementCategory.LEARNING,
+        metric=AchievementMetric.TOTAL_ATTEMPTS,
+        threshold=500,
+        icon_code="TARGET",
+        sort_order=26,
+    ),
+    AchievementSpec(
+        code="LESSONS_10",
+        name="Mười bài học",
+        description="Hoàn thành mười bài học.",
+        category=AchievementCategory.LEARNING,
+        metric=AchievementMetric.LESSONS_COMPLETED,
+        threshold=10,
+        icon_code="PATH",
+        sort_order=27,
+    ),
+    AchievementSpec(
+        code="LESSONS_50",
+        name="Đi hết chặng dài",
+        description="Hoàn thành năm mươi bài học.",
+        category=AchievementCategory.LEARNING,
+        metric=AchievementMetric.LESSONS_COMPLETED,
+        threshold=50,
+        icon_code="PATH",
+        sort_order=28,
+    ),
+    # --- the arena ---
+    AchievementSpec(
+        code="PVP_WIN_1",
+        name="Trận thắng đầu tiên",
+        description="Thắng một trận đấu.",
+        category=AchievementCategory.PVP,
+        metric=AchievementMetric.PVP_WINS,
+        threshold=1,
+        icon_code="SWORD",
+        sort_order=30,
+    ),
+    AchievementSpec(
+        code="PVP_WIN_25",
+        name="Quen mặt đấu trường",
+        description="Thắng hai mươi lăm trận.",
+        category=AchievementCategory.PVP,
+        metric=AchievementMetric.PVP_WINS,
+        threshold=25,
+        icon_code="SWORD",
+        sort_order=31,
+    ),
+    AchievementSpec(
+        code="PVP_WIN_100",
+        name="Trăm trận",
+        description="Thắng một trăm trận.",
+        category=AchievementCategory.PVP,
+        metric=AchievementMetric.PVP_WINS,
+        threshold=100,
+        icon_code="TROPHY",
+        sort_order=32,
+    ),
+    AchievementSpec(
+        code="PVP_RATING_1200",
+        name="Leo hạng",
+        description="Đạt 1200 điểm xếp hạng.",
+        category=AchievementCategory.PVP,
+        metric=AchievementMetric.PVP_RATING,
+        threshold=1200,
+        icon_code="BOLT",
+        sort_order=33,
+    ),
+    AchievementSpec(
+        code="PVP_RATING_1600",
+        name="Cao thủ",
+        description="Đạt 1600 điểm xếp hạng.",
+        category=AchievementCategory.PVP,
+        metric=AchievementMetric.PVP_RATING,
+        threshold=1600,
+        icon_code="BOLT",
+        sort_order=34,
+    ),
+    AchievementSpec(
+        code="PVP_STREAK_5",
+        name="Năm trận liên tiếp",
+        description="Từng thắng năm trận liền.",
+        category=AchievementCategory.PVP,
+        metric=AchievementMetric.PVP_BEST_STREAK,
+        threshold=5,
+        icon_code="TROPHY",
+        sort_order=35,
+    ),
+    # --- the learn path's gates ---
+    AchievementSpec(
+        code="BATTLE_WIN_1",
+        name="Hạ gục quái đầu tiên",
+        description="Thắng một trận đánh quái.",
+        category=AchievementCategory.PVE,
+        metric=AchievementMetric.BATTLES_WON,
+        threshold=1,
+        icon_code="SKULL",
+        sort_order=40,
+    ),
+    AchievementSpec(
+        code="BATTLE_WIN_25",
+        name="Thợ săn",
+        description="Thắng hai mươi lăm trận đánh quái.",
+        category=AchievementCategory.PVE,
+        metric=AchievementMetric.BATTLES_WON,
+        threshold=25,
+        icon_code="SKULL",
+        sort_order=41,
+    ),
+    AchievementSpec(
+        code="BATTLE_WIN_100",
+        name="Khắc tinh của quái vật",
+        description="Thắng một trăm trận đánh quái.",
+        category=AchievementCategory.PVE,
+        metric=AchievementMetric.BATTLES_WON,
+        threshold=100,
+        icon_code="CROWN",
+        sort_order=42,
+    ),
+)
+
+
+def _achievement_row(spec: AchievementSpec) -> dict[str, object]:
+    return {
+        "name": spec.name,
+        "description": spec.description,
+        "category": spec.category,
+        "metric": spec.metric,
+        "threshold": spec.threshold,
+        "icon_code": spec.icon_code,
+        "sort_order": spec.sort_order,
+        "is_hidden": spec.is_hidden,
+        "is_active": True,
+    }
+
+
+async def seed_achievement_catalog(achievements: AchievementRepository) -> None:
+    """Upsert the achievement list. Safe to run on every start."""
+    for spec in ACHIEVEMENTS:
+        await achievements.upsert_achievement(spec.code, _achievement_row(spec))
 
 
 # --- monsters ---------------------------------------------------------------
