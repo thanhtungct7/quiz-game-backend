@@ -1,4 +1,6 @@
 from app.services.duo.scoring import (
+    COMBO_BONUS_TIER_1_POINTS,
+    COMBO_BONUS_TIER_2_POINTS,
     MAX_POINTS,
     MatchOutcome,
     PlayerTotals,
@@ -30,6 +32,28 @@ def test_points_decay_with_time_spent() -> None:
     assert MAX_POINTS > fast > slow > 500
 
 
+def test_a_short_combo_earns_no_bonus() -> None:
+    assert award_points(is_correct=True, elapsed_ms=0, time_limit_seconds=15, combo_count=2) == (
+        MAX_POINTS
+    )
+
+
+def test_a_combo_of_three_earns_the_first_tier_bonus() -> None:
+    scored = award_points(is_correct=True, elapsed_ms=0, time_limit_seconds=15, combo_count=3)
+    assert scored == MAX_POINTS + COMBO_BONUS_TIER_1_POINTS
+
+
+def test_a_combo_of_five_earns_the_second_tier_bonus() -> None:
+    scored = award_points(is_correct=True, elapsed_ms=0, time_limit_seconds=15, combo_count=5)
+    assert scored == MAX_POINTS + COMBO_BONUS_TIER_2_POINTS
+
+
+def test_a_wrong_answer_earns_no_combo_bonus_either() -> None:
+    assert (
+        award_points(is_correct=False, elapsed_ms=0, time_limit_seconds=15, combo_count=9) == 0
+    )
+
+
 def test_higher_score_wins() -> None:
     one = PlayerTotals(score=2000, correct_count=2, total_elapsed_ms=9_000)
     two = PlayerTotals(score=1500, correct_count=3, total_elapsed_ms=1_000)
@@ -54,8 +78,8 @@ def test_identical_totals_are_a_draw() -> None:
 
 
 def test_clearing_the_deck_beats_everything() -> None:
-    """Answering every question right is the race the match is about; being
-    healthier only means you lost the race in better shape."""
+    """Answering every question right is the race the match is about, and it
+    outranks a point lead even at 1 HP against a full bar."""
     one = PlayerTotals(
         score=0, correct_count=3, total_elapsed_ms=99_000, hp_left=1, deck_cleared=True
     )
@@ -67,40 +91,29 @@ def test_clearing_the_deck_beats_everything() -> None:
     assert decide_outcome(two, one) is MatchOutcome.LOSE
 
 
-def test_neither_clearing_the_deck_decides_on_health_as_before() -> None:
-    one = PlayerTotals(score=0, correct_count=0, total_elapsed_ms=0, hp_left=40)
-    two = PlayerTotals(score=9000, correct_count=9, total_elapsed_ms=0, hp_left=10)
+def test_neither_clearing_the_deck_falls_through_to_score() -> None:
+    one = PlayerTotals(score=0, correct_count=0, total_elapsed_ms=0)
+    two = PlayerTotals(score=9000, correct_count=9, total_elapsed_ms=0)
 
-    assert decide_outcome(one, two) is MatchOutcome.WIN
-
-
-def test_health_beats_score() -> None:
-    # Losing the fight while winning on points is still losing.
-    one = PlayerTotals(score=3000, correct_count=3, total_elapsed_ms=1_000, hp_left=0)
-    two = PlayerTotals(score=500, correct_count=1, total_elapsed_ms=9_000, hp_left=12)
     assert decide_outcome(one, two) is MatchOutcome.LOSE
-    assert decide_outcome(two, one) is MatchOutcome.WIN
 
 
-def test_a_knockout_is_decided_by_health_alone() -> None:
-    winner = PlayerTotals(score=0, correct_count=0, total_elapsed_ms=0, hp_left=1)
-    loser = PlayerTotals(score=0, correct_count=0, total_elapsed_ms=0, hp_left=0)
-    assert decide_outcome(winner, loser) is MatchOutcome.WIN
+def test_health_never_decides_a_match() -> None:
+    """A Knowledge Arena match carries no HP win condition: the player with
+    fewer points loses even standing at full health against a knockout."""
+    one = PlayerTotals(score=3000, correct_count=3, total_elapsed_ms=1_000, hp_left=0)
+    two = PlayerTotals(score=500, correct_count=1, total_elapsed_ms=9_000, hp_left=100)
+    assert decide_outcome(one, two) is MatchOutcome.WIN
+    assert decide_outcome(two, one) is MatchOutcome.LOSE
 
 
-def test_a_double_knockout_falls_through_to_the_point_tiebreaks() -> None:
+def test_a_double_knockout_is_still_decided_by_score() -> None:
     one = PlayerTotals(score=2000, correct_count=2, total_elapsed_ms=4_000, hp_left=0)
     two = PlayerTotals(score=1500, correct_count=2, total_elapsed_ms=4_000, hp_left=0)
     assert decide_outcome(one, two) is MatchOutcome.WIN
 
 
-def test_equal_health_decides_on_points_exactly_as_before() -> None:
-    one = PlayerTotals(score=2000, correct_count=2, total_elapsed_ms=9_000, hp_left=40)
-    two = PlayerTotals(score=1500, correct_count=3, total_elapsed_ms=1_000, hp_left=40)
-    assert decide_outcome(one, two) is MatchOutcome.WIN
-
-
-def test_full_health_is_the_default_so_score_still_decides() -> None:
+def test_full_health_is_the_default_and_still_irrelevant() -> None:
     one = PlayerTotals(score=2000, correct_count=2, total_elapsed_ms=9_000)
     two = PlayerTotals(score=1500, correct_count=3, total_elapsed_ms=1_000)
     assert decide_outcome(one, two) is MatchOutcome.WIN

@@ -3,10 +3,9 @@
 from app.models.game.user_skill import LOADOUT_SLOTS
 from app.repository.game.catalog_repository import CatalogRepository
 from app.repository.game.game_profile_repository import GameProfileRepository
-from app.repository.game.item_repository import ItemRepository
 from app.repository.game.user_skill_repository import UserSkillRepository
-from app.services.game.combat_stats import ClassPart, class_part, item_part, resolve
-from app.services.game.leveling import level_for_exp
+from app.services.game.combat_stats import ClassPart, class_part, resolve
+from app.services.game.leveling import effective_level
 from app.services.game.loadout import EquippedSkill, PlayerLoadout
 from app.services.game.starters import ensure_starters
 
@@ -18,14 +17,12 @@ class LoadoutBuilder:
         profiles: GameProfileRepository,
         catalog: CatalogRepository,
         skills: UserSkillRepository,
-        items: ItemRepository,
     ) -> None:
         self.profiles = profiles
         self.catalog = catalog
         self.skills = skills
-        self.items = items
 
-    async def build(self, user_id: str) -> PlayerLoadout:
+    async def build(self, user_id: str, *, pvp: bool = False) -> PlayerLoadout:
         """Everything a match needs to know about one player, resolved once.
 
         A player with no profile or no class still gets a playable loadout on
@@ -38,6 +35,16 @@ class LoadoutBuilder:
         them in with an empty skill bar -- the same broken promise the starter
         grant exists to keep, one layer further down. Everything below reads
         cleanly with `profile` absent, so the grant is reached either way.
+
+        `pvp=True` is the Knowledge Arena's whole fairness guarantee: class
+        never moves `max_hp`, `damage_permille`, `starting_mana` or `defence`
+        in a duo match, so two players always meet on the same symbolic 100 HP
+        with nothing ground for standing between them. Equipment never moved
+        these numbers to begin with -- see `combat_stats.resolve` -- so the
+        only thing `pvp` neutralizes here is the class and the daily streak.
+        `class_code`, `level` and the equipped skills still come from the real
+        profile: a school is a choice of *which* Knowledge Lifelines a player
+        brings, never of how much health or damage they start with.
         """
         profile = await self.profiles.get_by_user(user_id)
 
@@ -76,24 +83,25 @@ class LoadoutBuilder:
             if skill.is_active and slot.slot_index < LOADOUT_SLOTS
         ]
 
-        # Class, equipment and the daily streak are added up by
-        # `combat_stats.resolve`, which the profile screen also calls. Sharing
-        # the arithmetic rather than repeating it is what makes the numbers on
-        # a player's card the numbers they actually fight on.
+        # Class and the daily streak are added up by `combat_stats.resolve`,
+        # which the profile screen also calls. Sharing the arithmetic rather
+        # than repeating it is what makes the numbers on a player's card the
+        # numbers they actually fight on -- everywhere except the Arena, which
+        # deliberately resolves on no class and no streak at all.
         day_streak = profile.day_streak if profile is not None else 0
-        build = resolve(
-            base=base,
-            equipment=[
-                item_part(item)
-                for _worn, item in await self.items.equipment(user_id)
-                if item.is_active
-            ],
-            day_streak=day_streak,
+        build = (
+            resolve(base=None, day_streak=0)
+            if pvp
+            else resolve(base=base, day_streak=day_streak)
         )
 
         return PlayerLoadout(
             user_id=user_id,
-            level=level_for_exp(profile.total_exp) if profile is not None else 1,
+            level=(
+                effective_level(profile.total_exp, profile.benchmark_cleared_level)
+                if profile is not None
+                else 1
+            ),
             class_code=profile.class_code if profile is not None else None,
             max_hp=build.max_hp,
             starting_mana=build.starting_mana,

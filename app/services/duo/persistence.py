@@ -188,10 +188,10 @@ class DatabaseDuoPersistence:
                 profiles=profiles,
                 catalog=CatalogRepository(db),
                 skills=UserSkillRepository(db),
-                items=ItemRepository(db),
             )
             return {
-                user_id: await builder.build(user_id) for user_id in match.player_ids
+                user_id: await builder.build(user_id, pvp=True)
+                for user_id in match.player_ids
             }
 
     async def refund_start(self, match: LiveMatch) -> None:

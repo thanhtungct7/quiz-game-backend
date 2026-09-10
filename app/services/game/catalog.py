@@ -29,6 +29,9 @@ ENRAGE_MULTIPLIER_PERMILLE = 1400
 
 WARRIOR = "WARRIOR"
 MAGE = "MAGE"
+# The code stays ASSASSIN -- every foreign key, seeded row and existing
+# player's `class_code` names it -- but the school is "Học giả" now, the
+# third of the three learning schools alongside Chiến binh and Pháp sư.
 ASSASSIN = "ASSASSIN"
 
 
@@ -47,13 +50,18 @@ class ClassSpec:
     sort_order: int
 
 
-# Health and damage trade against each other; starting mana decides how early
-# a class can act. A warrior outlasts, a mage races, an assassin builds.
+# Three learning schools, not three power builds: `max_hp`/`damage_permille`/
+# `starting_mana`/`defence` still shape the boss fight at the end of a unit
+# (the one screen with real combat left), but the Knowledge Arena resolves
+# every duo match on a shared, class-blind baseline -- see
+# `loadout_builder.LoadoutBuilder.build`'s `pvp` flag. A school here is a
+# choice of *which* skill tree of Knowledge Lifelines a player trains, plus
+# how they carry a boss fight: bền bỉ, ngữ pháp cẩn trọng, hay tốc độ.
 CLASSES = (
     ClassSpec(
         code=WARRIOR,
         name="Chiến binh",
-        description="Giáp dày, đòn nhẹ hơn. Chịu đòn giỏi để thắng bằng độ bền.",
+        description="Bền bỉ. Chuyên các phao Loại trừ đáp án -- soi lỗi sai trước khi chọn.",
         # Health came down from 130 when DEF arrived. The two are the same
         # resource, and stacking both would have made this the only class worth
         # picking; defence is what makes a warrior a warrior now, not bulk.
@@ -66,7 +74,7 @@ CLASSES = (
     ClassSpec(
         code=MAGE,
         name="Pháp sư",
-        description="Sát thương cao nhưng mỏng manh. Kết thúc trận trước khi bị bắt kịp.",
+        description="Ngữ pháp. Chuyên các phao Gia hạn thời gian để đọc kỹ câu khó.",
         max_hp=80,
         damage_permille=1250,
         starting_mana=30,
@@ -75,8 +83,8 @@ CLASSES = (
     ),
     ClassSpec(
         code=ASSASSIN,
-        name="Sát thủ",
-        description="Cân bằng, mạnh lên theo chuỗi trả lời đúng liên tiếp.",
+        name="Học giả",
+        description="Tốc độ. Chuyên các Khiên combo -- giữ chuỗi trả lời nhanh không đứt.",
         max_hp=100,
         damage_permille=1050,
         starting_mana=20,
@@ -104,40 +112,46 @@ class SkillSpec:
     sort_order: int = 0
 
 
-# `magnitude` is read against `effect`: percent for DOUBLE_DAMAGE, thousandths
-# for DAMAGE_REDUCTION, health for HEAL, seconds for TIME_PENALTY, options for
-# REMOVE_OPTIONS, mana for MANA_BURN, health threshold for EXECUTE.
+# The Knowledge Lifelines. Every equippable skill -- starter, class tree or
+# ultimate -- is one of exactly these three; nothing in the active catalog
+# grants DOUBLE_DAMAGE, DAMAGE_REDUCTION, HEAL, MANA_BURN or EXECUTE any more,
+# and the Cast animation that used to spend those effects now spends these
+# instead. `magnitude` is read against `effect`: options revealed for
+# REMOVE_OPTIONS, seconds added for TIME_BONUS, and an (unused) 1 for
+# COMBO_KEEP, whose real number is `duration_rounds` -- how many misses in a
+# row it forgives.
 SKILLS = (
     # Neutral starters, granted free with the first profile so nobody ever
     # walks into a match with an empty bar.
     SkillSpec(
         code="STRIKE_X2",
-        name="Song kích",
-        description="Đòn của hiệp này nhân đôi sát thương.",
-        effect=SkillEffect.DOUBLE_DAMAGE,
+        name="Khiên combo",
+        description="Trả lời sai ở hiệp kế tiếp không làm mất chuỗi combo.",
+        effect=SkillEffect.COMBO_KEEP,
         mana_cost=50,
-        magnitude=200,
+        magnitude=1,
+        duration_rounds=1,
         unlock_kind=SkillUnlockKind.STARTER,
         sort_order=1,
     ),
     SkillSpec(
         code="SHIELD",
-        name="Khiên chắn",
-        description="Giảm một nửa sát thương phải nhận trong hiệp này.",
-        effect=SkillEffect.DAMAGE_REDUCTION,
+        name="Phao 50/50",
+        description="Loại bỏ 1 đáp án sai của câu hỏi hiện tại, chỉ mình bạn thấy.",
+        effect=SkillEffect.REMOVE_OPTIONS,
         mana_cost=40,
-        magnitude=500,
+        magnitude=1,
         unlock_kind=SkillUnlockKind.STARTER,
         sort_order=2,
     ),
-    # Warrior: outlast.
+    # Warrior (Bền bỉ): soi lỗi sai trước khi chọn, mạnh dần theo bậc.
     SkillSpec(
         code="WAR_GUARD",
-        name="Trấn thủ",
-        description="Giảm 70% sát thương phải nhận trong hiệp này.",
-        effect=SkillEffect.DAMAGE_REDUCTION,
+        name="Soi lỗi",
+        description="Loại bỏ 1 đáp án sai của câu hỏi hiện tại, chỉ mình bạn thấy.",
+        effect=SkillEffect.REMOVE_OPTIONS,
         mana_cost=45,
-        magnitude=700,
+        magnitude=1,
         unlock_kind=SkillUnlockKind.LEVEL_GOLD,
         class_code=WARRIOR,
         tier=1,
@@ -147,11 +161,11 @@ SKILLS = (
     ),
     SkillSpec(
         code="WAR_MEND",
-        name="Hồi phục",
-        description="Hồi 25 máu ngay lập tức.",
-        effect=SkillEffect.HEAL,
+        name="Phao 50/50",
+        description="Loại bỏ 2 đáp án sai của câu hỏi hiện tại, chỉ mình bạn thấy.",
+        effect=SkillEffect.REMOVE_OPTIONS,
         mana_cost=50,
-        magnitude=25,
+        magnitude=2,
         unlock_kind=SkillUnlockKind.LEVEL_GOLD,
         class_code=WARRIOR,
         tier=2,
@@ -162,11 +176,11 @@ SKILLS = (
     ),
     SkillSpec(
         code="WAR_LAST_STAND",
-        name="Tử thủ",
-        description="Hồi 40 máu ngay lập tức.",
-        effect=SkillEffect.HEAL,
+        name="Chỉ còn một đường",
+        description="Loại bỏ mọi đáp án sai ngoại trừ một, chỉ mình bạn thấy.",
+        effect=SkillEffect.REMOVE_OPTIONS,
         mana_cost=70,
-        magnitude=40,
+        magnitude=3,
         unlock_kind=SkillUnlockKind.LEVEL_GOLD,
         class_code=WARRIOR,
         tier=3,
@@ -175,14 +189,15 @@ SKILLS = (
         gold_price=600,
         sort_order=12,
     ),
-    # Mage: race, and slow the other side down.
+    # Mage (Ngữ pháp): gia hạn thời gian để đọc kỹ, mạnh dần theo bậc.
     SkillSpec(
         code="MAGE_BOLT",
-        name="Lôi kích",
-        description="Đòn của hiệp này gây 250% sát thương.",
-        effect=SkillEffect.DOUBLE_DAMAGE,
+        name="Gia hạn +3s",
+        description="Cộng thêm 3 giây thời gian tính điểm cho câu trả lời kế tiếp.",
+        effect=SkillEffect.TIME_BONUS,
         mana_cost=55,
-        magnitude=250,
+        magnitude=3,
+        duration_rounds=1,
         unlock_kind=SkillUnlockKind.LEVEL_GOLD,
         class_code=MAGE,
         tier=1,
@@ -192,9 +207,9 @@ SKILLS = (
     ),
     SkillSpec(
         code="MAGE_FREEZE",
-        name="Băng giá",
-        description="Rút ngắn 5 giây thời gian trả lời của đối thủ ở hiệp kế tiếp.",
-        effect=SkillEffect.TIME_PENALTY,
+        name="Gia hạn +5s",
+        description="Cộng thêm 5 giây thời gian tính điểm cho câu trả lời kế tiếp.",
+        effect=SkillEffect.TIME_BONUS,
         mana_cost=55,
         magnitude=5,
         duration_rounds=1,
@@ -208,11 +223,12 @@ SKILLS = (
     ),
     SkillSpec(
         code="MAGE_DRAIN",
-        name="Hút mana",
-        description="Đốt 40 mana của đối thủ.",
-        effect=SkillEffect.MANA_BURN,
-        mana_cost=35,
-        magnitude=40,
+        name="Gia hạn +8s",
+        description="Cộng thêm 8 giây thời gian tính điểm cho câu trả lời kế tiếp.",
+        effect=SkillEffect.TIME_BONUS,
+        mana_cost=60,
+        magnitude=8,
+        duration_rounds=1,
         unlock_kind=SkillUnlockKind.LEVEL_GOLD,
         class_code=MAGE,
         tier=3,
@@ -221,7 +237,8 @@ SKILLS = (
         gold_price=600,
         sort_order=22,
     ),
-    # Assassin: protect the combo, then cash it in.
+    # Học giả (Tốc độ): giữ nhịp trả lời nhanh không đứt chuỗi, mạnh dần theo
+    # số lần trả lời sai liên tiếp mà một Khiên combo còn tha thứ được.
     SkillSpec(
         code="ASSA_FOCUS",
         name="Tập trung",
@@ -239,11 +256,12 @@ SKILLS = (
     ),
     SkillSpec(
         code="ASSA_REVEAL",
-        name="Nhìn thấu",
-        description="Loại bỏ 2 đáp án sai, chỉ mình bạn thấy.",
-        effect=SkillEffect.REMOVE_OPTIONS,
-        mana_cost=35,
-        magnitude=2,
+        name="Tập trung cao độ",
+        description="Hai hiệp kế tiếp trả lời sai đều không làm mất chuỗi combo.",
+        effect=SkillEffect.COMBO_KEEP,
+        mana_cost=45,
+        magnitude=1,
+        duration_rounds=2,
         unlock_kind=SkillUnlockKind.LEVEL_GOLD,
         class_code=ASSASSIN,
         tier=2,
@@ -254,11 +272,12 @@ SKILLS = (
     ),
     SkillSpec(
         code="ASSA_EXECUTE",
-        name="Kết liễu",
-        description="Sát thương nhân đôi khi đối thủ còn dưới 30 máu.",
-        effect=SkillEffect.EXECUTE,
+        name="Bất khả chiến bại",
+        description="Ba hiệp kế tiếp trả lời sai đều không làm mất chuỗi combo.",
+        effect=SkillEffect.COMBO_KEEP,
         mana_cost=60,
-        magnitude=30,
+        magnitude=1,
+        duration_rounds=3,
         unlock_kind=SkillUnlockKind.LEVEL_GOLD,
         class_code=ASSASSIN,
         tier=3,
@@ -271,37 +290,41 @@ SKILLS = (
 
 # Ultimates cost no gold and answer to no level. They are bought with study:
 # finish every lesson of the unit they are bound to and they are yours. Neutral
-# on purpose, so the reward for learning is not gated behind a class choice.
+# on purpose, so the reward for learning is not gated behind a class choice --
+# and one ultimate for each of the three Knowledge Lifelines, so finishing a
+# unit is never tied to the school a player happened to pick.
 ULTIMATES = (
     SkillSpec(
         code="ULT_OVERDRIVE",
-        name="Bùng nổ",
-        description="Đòn của hiệp này gây 300% sát thương.",
-        effect=SkillEffect.DOUBLE_DAMAGE,
+        name="Nhìn thấu tuyệt đối",
+        description="Loại bỏ mọi đáp án sai ngoại trừ một, chỉ mình bạn thấy.",
+        effect=SkillEffect.REMOVE_OPTIONS,
         mana_cost=80,
-        magnitude=300,
+        magnitude=3,
         unlock_kind=SkillUnlockKind.UNIT_COMPLETION,
         tier=3,
         sort_order=40,
     ),
     SkillSpec(
         code="ULT_AEGIS",
-        name="Thánh khiên",
-        description="Giảm 80% sát thương phải nhận trong hiệp này.",
-        effect=SkillEffect.DAMAGE_REDUCTION,
+        name="Khiên combo tối thượng",
+        description="Hai hiệp kế tiếp trả lời sai đều không làm mất chuỗi combo.",
+        effect=SkillEffect.COMBO_KEEP,
         mana_cost=70,
-        magnitude=800,
+        magnitude=1,
+        duration_rounds=2,
         unlock_kind=SkillUnlockKind.UNIT_COMPLETION,
         tier=3,
         sort_order=41,
     ),
     SkillSpec(
         code="ULT_SIPHON",
-        name="Hồi sinh",
-        description="Hồi 50 máu ngay lập tức.",
-        effect=SkillEffect.HEAL,
+        name="Gia hạn +10s",
+        description="Cộng thêm 10 giây thời gian tính điểm cho câu trả lời kế tiếp.",
+        effect=SkillEffect.TIME_BONUS,
         mana_cost=90,
-        magnitude=50,
+        magnitude=10,
+        duration_rounds=1,
         unlock_kind=SkillUnlockKind.UNIT_COMPLETION,
         tier=3,
         sort_order=42,
@@ -376,16 +399,19 @@ class ItemSpec:
     kind: ItemKind
     rarity: ItemRarity
     slot: EquipmentSlot | None = None
-    bonus_max_hp: int = 0
-    bonus_damage_permille: int = 0
-    bonus_starting_mana: int = 0
-    bonus_defence: int = 0
+    # Thousandths on top of a match or lesson's EXP/Gold payout. Individually
+    # small, and capped again when combined (`loot.total_bonus`) -- equipment
+    # flavours the reward loop, it must never decide whether a match is won.
+    bonus_exp_permille: int = 0
+    bonus_gold_permille: int = 0
 
 
-# Individually small, and capped again when combined (`loot.total_bonus`).
-# Equipment flavours a build; it must not decide a match before the first
-# question. Skins and cards carry no bonus at all -- they are there to make a
-# chest worth opening without touching balance.
+# The weapon slot pays in Gold (a quest reward), the armour slot in EXP (study
+# retained), and the trinket slot a little of both. Skins and cards carry no
+# bonus at all -- they are there to make a chest worth opening without
+# touching balance. Names and codes are unchanged from the RPG catalog on
+# purpose: the client's art and inventory already key off them, and only what
+# an item is *worth* changed, not what it is called.
 ITEMS = (
     ItemSpec(
         code="WOODEN_SWORD",
@@ -393,7 +419,7 @@ ITEMS = (
         kind=ItemKind.EQUIPMENT,
         rarity=ItemRarity.COMMON,
         slot=EquipmentSlot.WEAPON,
-        bonus_damage_permille=20,
+        bonus_gold_permille=20,
     ),
     ItemSpec(
         code="STEEL_SWORD",
@@ -401,7 +427,7 @@ ITEMS = (
         kind=ItemKind.EQUIPMENT,
         rarity=ItemRarity.RARE,
         slot=EquipmentSlot.WEAPON,
-        bonus_damage_permille=45,
+        bonus_gold_permille=45,
     ),
     ItemSpec(
         code="RUNE_BLADE",
@@ -409,7 +435,7 @@ ITEMS = (
         kind=ItemKind.EQUIPMENT,
         rarity=ItemRarity.EPIC,
         slot=EquipmentSlot.WEAPON,
-        bonus_damage_permille=70,
+        bonus_gold_permille=70,
     ),
     ItemSpec(
         code="LEATHER_VEST",
@@ -417,7 +443,7 @@ ITEMS = (
         kind=ItemKind.EQUIPMENT,
         rarity=ItemRarity.COMMON,
         slot=EquipmentSlot.ARMOR,
-        bonus_max_hp=4,
+        bonus_exp_permille=20,
     ),
     ItemSpec(
         code="CHAIN_MAIL",
@@ -425,8 +451,7 @@ ITEMS = (
         kind=ItemKind.EQUIPMENT,
         rarity=ItemRarity.RARE,
         slot=EquipmentSlot.ARMOR,
-        bonus_max_hp=8,
-        bonus_defence=1,
+        bonus_exp_permille=45,
     ),
     ItemSpec(
         code="DRAGON_PLATE",
@@ -434,9 +459,8 @@ ITEMS = (
         kind=ItemKind.EQUIPMENT,
         rarity=ItemRarity.LEGENDARY,
         slot=EquipmentSlot.ARMOR,
-        bonus_max_hp=14,
-        bonus_damage_permille=15,
-        bonus_defence=2,
+        bonus_exp_permille=70,
+        bonus_gold_permille=30,
     ),
 
     ItemSpec(
@@ -445,7 +469,8 @@ ITEMS = (
         kind=ItemKind.EQUIPMENT,
         rarity=ItemRarity.COMMON,
         slot=EquipmentSlot.TRINKET,
-        bonus_starting_mana=4,
+        bonus_exp_permille=10,
+        bonus_gold_permille=10,
     ),
     ItemSpec(
         code="SAGE_AMULET",
@@ -453,8 +478,8 @@ ITEMS = (
         kind=ItemKind.EQUIPMENT,
         rarity=ItemRarity.EPIC,
         slot=EquipmentSlot.TRINKET,
-        bonus_starting_mana=9,
-        bonus_max_hp=3,
+        bonus_exp_permille=25,
+        bonus_gold_permille=25,
     ),
     ItemSpec(
         code="SKIN_SCHOLAR",
@@ -489,10 +514,8 @@ def _item_row(spec: ItemSpec) -> dict[str, object]:
         "kind": spec.kind,
         "slot": spec.slot,
         "rarity": spec.rarity,
-        "bonus_max_hp": spec.bonus_max_hp,
-        "bonus_damage_permille": spec.bonus_damage_permille,
-        "bonus_starting_mana": spec.bonus_starting_mana,
-        "bonus_defence": spec.bonus_defence,
+        "bonus_exp_permille": spec.bonus_exp_permille,
+        "bonus_gold_permille": spec.bonus_gold_permille,
         "is_active": True,
     }
 

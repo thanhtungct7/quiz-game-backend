@@ -316,13 +316,17 @@ class BattleEngine:
         Nothing comes back at the player: the monster's damage is on its own
         clock now, so being wrong costs tempo and the combo, never health.
         """
+        # A standing Gia hạn +5s lifeline is spent on the next answer whether
+        # it lands right or wrong -- it bought reading time, not a guess.
+        limit = SPEED_REFERENCE_SECONDS + self._time_bonus_seconds(battle, now)
+
         battle.answers_given += 1
         if answer.is_correct or not self._combo_survives(battle, now):
             battle.combo = combo_after(battle.combo, answer.is_correct)
         battle.best_combo = max(battle.best_combo, battle.combo)
         battle.mana = gain_mana(
             battle.mana,
-            award_mana(answer.is_correct, answer.elapsed_ms, SPEED_REFERENCE_SECONDS),
+            award_mana(answer.is_correct, answer.elapsed_ms, limit),
         )
         if not answer.is_correct:
             return None
@@ -331,7 +335,7 @@ class BattleEngine:
         blow = resolve_blow(
             is_correct=True,
             elapsed_ms=answer.elapsed_ms,
-            time_limit_seconds=SPEED_REFERENCE_SECONDS,
+            time_limit_seconds=limit,
             combo_count=battle.combo,
             attacker_damage_permille=self._attack_permille(battle, now),
             defender_reduction_permille=battle.monster.profile.damage_reduction_permille,
@@ -638,6 +642,12 @@ class BattleEngine:
     def _combo_survives(self, battle: LiveBattle, now: float) -> bool:
         """Whether a miss is forgiven by a standing COMBO_KEEP."""
         return battle.effects.consume(SkillEffect.COMBO_KEEP, now) is not None
+
+    def _time_bonus_seconds(self, battle: LiveBattle, now: float) -> int:
+        """Extra seconds a standing Gia hạn +5s lifeline adds to this answer's
+        speed reference, spent whether the answer lands right or wrong."""
+        bonus = battle.effects.consume(SkillEffect.TIME_BONUS, now)
+        return bonus.magnitude if bonus is not None else 0
 
     def _attack_permille(self, battle: LiveBattle, now: float) -> int:
         """The player's damage scaling: class and gear, then whatever they cast.

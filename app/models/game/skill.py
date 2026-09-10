@@ -8,7 +8,16 @@ from app.db.base import Base
 
 
 class SkillEffect(StrEnum):
-    """What a skill does. The catalog holds the numbers; this picks the branch."""
+    """What a skill does. The catalog holds the numbers; this picks the branch.
+
+    DOUBLE_DAMAGE, DAMAGE_REDUCTION, HEAL, MANA_BURN and EXECUTE are the old
+    RPG combat skills. Nothing in the active catalog grants them any more --
+    every equippable skill is one of the three Knowledge Lifelines
+    (REMOVE_OPTIONS, COMBO_KEEP, TIME_BONUS) -- but the branch stays so a
+    retired skill still resolves to *something* rather than a crash for
+    whoever already owns one. TIME_PENALTY likewise no longer appears in the
+    catalog.
+    """
 
     DOUBLE_DAMAGE = "DOUBLE_DAMAGE"
     DAMAGE_REDUCTION = "DAMAGE_REDUCTION"
@@ -18,6 +27,10 @@ class SkillEffect(StrEnum):
     MANA_BURN = "MANA_BURN"
     COMBO_KEEP = "COMBO_KEEP"
     EXECUTE = "EXECUTE"
+    # A Knowledge Lifeline: adds `magnitude` seconds to the time this player's
+    # next correct answer is scored against, so reading a hard question
+    # carefully no longer costs the speed bonus.
+    TIME_BONUS = "TIME_BONUS"
 
 
 class SkillUnlockKind(StrEnum):

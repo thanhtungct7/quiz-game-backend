@@ -451,7 +451,9 @@ class DuoEngine:
             option_id=option_id,
             elapsed_ms=elapsed_ms,
             is_correct=is_correct,
-            points=award_points(is_correct, elapsed_ms, match.settings.time_per_question),
+            # Filled in by `_settle_answer`, once the combo this answer reaches
+            # -- and any standing Gia hạn +5s lifeline -- are known.
+            points=0,
             correct_option_ids=list(correct_ids),
             explanation=match.explanations.get(question.id),
         )
@@ -518,10 +520,11 @@ class DuoEngine:
         change from the lock-step engine: there is no round to wait for, so
         whoever answers first is the one whose blow lands first.
         """
-        limit = match.settings.time_per_question
+        # A standing Gia hạn +5s lifeline is spent on the next answer whether
+        # it lands right or wrong -- it bought reading time, not a guess.
+        limit = match.settings.time_per_question + self._time_bonus_seconds(player, now)
 
         player.answers_given += 1
-        player.score += answer.points
         player.total_elapsed_ms += answer.elapsed_ms
         if answer.is_correct or not self._combo_survives(player, now):
             player.combo = combo_after(player.combo, answer.is_correct)
@@ -529,6 +532,13 @@ class DuoEngine:
         player.mana = gain_mana(
             player.mana, award_mana(answer.is_correct, answer.elapsed_ms, limit)
         )
+        # The combo this answer reaches -- `player.combo` was just updated
+        # above -- is what both the score bonus and `resolve_blow` read, so a
+        # streak means exactly the same length in the points and in the fight.
+        answer.points = award_points(
+            answer.is_correct, answer.elapsed_ms, limit, player.combo
+        )
+        player.score += answer.points
         if not answer.is_correct:
             return None
 
@@ -914,6 +924,12 @@ class DuoEngine:
     def _combo_survives(self, player: PlayerConn, now: float) -> bool:
         """Whether a miss is forgiven by a standing COMBO_KEEP."""
         return player.effects.consume(SkillEffect.COMBO_KEEP, now) is not None
+
+    def _time_bonus_seconds(self, player: PlayerConn, now: float) -> int:
+        """Extra seconds a standing Gia hạn +5s lifeline adds to this answer's
+        speed reference, spent whether the answer lands right or wrong."""
+        bonus = player.effects.consume(SkillEffect.TIME_BONUS, now)
+        return bonus.magnitude if bonus is not None else 0
 
     def _attack_permille(
         self, player: PlayerConn, opponent: PlayerConn | None, now: float
