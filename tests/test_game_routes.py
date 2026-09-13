@@ -1,8 +1,10 @@
 from datetime import UTC, datetime
 
 import httpx
+import pytest
 
 from app.api.dependencies import get_current_user, get_game_service
+from app.core.exceptions import BenchmarkExamNotEligibleError
 from app.main import app
 from app.models.auth.user import User
 from app.models.duo.duo_rating import DuoRating
@@ -449,60 +451,56 @@ async def test_nothing_is_pending_before_experience_reaches_the_cap() -> None:
     assert body["pending_benchmark_level"] is None
 
 
-async def test_passing_the_benchmark_exam_releases_the_level() -> None:
+async def test_the_old_verdict_endpoint_is_gone() -> None:
+    # A pass used to be posted straight from the client. It must not be
+    # reachable any more: a cap is only ever cleared by a graded sitting.
     cap = LEVEL_CAPS[0]
     harness = Harness(profile=_profile(total_exp=exp_for_level(cap + 5)))
 
     response = await harness.request("POST", "/benchmark-exam", {"cap_level": cap})
 
-    assert response.status_code == 200
-    body = response.json()
-    assert body["level"] == cap + 5
-    assert body["pending_benchmark_level"] is None
+    assert response.status_code == 404
+    assert harness.profiles.profile.benchmark_cleared_level == 0
 
 
-async def test_the_exam_cannot_be_passed_before_the_level_is_reached() -> None:
+async def test_clearing_a_cap_releases_the_level() -> None:
     cap = LEVEL_CAPS[0]
-    harness = Harness(profile=_profile(total_exp=exp_for_level(cap - 1)))
+    harness = Harness(profile=_profile(total_exp=exp_for_level(cap + 5)))
 
-    response = await harness.request("POST", "/benchmark-exam", {"cap_level": cap})
+    profile = await harness.service().clear_benchmark_cap("user-1", cap)
 
-    assert response.status_code == 400
+    assert profile.level == cap + 5
+    assert profile.pending_benchmark_level is None
 
 
-async def test_an_unknown_cap_level_is_a_400() -> None:
+async def test_clearing_an_unknown_cap_level_is_refused() -> None:
     harness = Harness(profile=_profile(total_exp=exp_for_level(99)))
 
-    response = await harness.request("POST", "/benchmark-exam", {"cap_level": 11})
+    with pytest.raises(BenchmarkExamNotEligibleError):
+        await harness.service().clear_benchmark_cap("user-1", 11)
 
-    assert response.status_code == 400
 
-
-async def test_passing_a_cap_again_is_a_no_op_not_an_error() -> None:
+async def test_clearing_a_cap_again_is_a_no_op_not_an_error() -> None:
     cap = LEVEL_CAPS[0]
     harness = Harness(
         profile=_profile(total_exp=exp_for_level(cap + 5), benchmark_cleared_level=cap)
     )
 
-    response = await harness.request("POST", "/benchmark-exam", {"cap_level": cap})
+    profile = await harness.service().clear_benchmark_cap("user-1", cap)
 
-    assert response.status_code == 200
-    assert response.json()["level"] == cap + 5
+    assert profile.level == cap + 5
 
 
-async def test_passing_a_later_cap_also_clears_every_cap_below_it() -> None:
+async def test_clearing_a_later_cap_also_clears_every_cap_below_it() -> None:
     # Sitting the level-25 Benchmark Exam implies the level-10 one is behind
     # the player too -- `benchmark_cleared_level` is a single high-water mark,
     # not a set of individually-held caps.
     second_cap = LEVEL_CAPS[1]
     harness = Harness(profile=_profile(total_exp=exp_for_level(second_cap + 3)))
 
-    response = await harness.request(
-        "POST", "/benchmark-exam", {"cap_level": second_cap}
-    )
+    profile = await harness.service().clear_benchmark_cap("user-1", second_cap)
 
-    assert response.status_code == 200
-    assert response.json()["level"] == second_cap + 3
+    assert profile.level == second_cap + 3
     assert harness.profiles.profile.benchmark_cleared_level == second_cap
 
 

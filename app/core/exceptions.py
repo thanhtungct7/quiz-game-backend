@@ -167,3 +167,33 @@ class UserNotFoundError(ApplicationError):
 class BenchmarkExamNotEligibleError(ApplicationError):
     """Raised when a Benchmark Exam result is recorded for a cap the player's
     raw level has not reached yet, or that is not one of `cefr.LEVEL_CAPS`."""
+
+
+class BenchmarkExamAlreadyClearedError(ApplicationError):
+    """Raised when a sitting is started for a cap the player has already cleared."""
+
+
+class BenchmarkExamAttemptNotFoundError(ApplicationError):
+    """Raised when a sitting does not exist or belongs to another player."""
+
+
+class BenchmarkExamAttemptClosedError(ApplicationError):
+    """Raised when an answer is sent to a sitting that has been handed in, has
+    run out of time, or was abandoned for a newer one."""
+
+
+class BenchmarkExamQuestionNotInAttemptError(ApplicationError):
+    """Raised when an answer names a challenge that is not on the paper."""
+
+
+class BenchmarkExamQuestionAlreadyAnsweredError(ApplicationError):
+    """Raised when a question on the paper is answered a second time."""
+
+
+class BenchmarkExamNotEnoughQuestionsError(ApplicationError):
+    """Raised when the course holds too little content to draw a paper from."""
+
+
+class ChallengeLockedByExamError(ApplicationError):
+    """Raised when a challenge is checked while it sits on the caller's open
+    Benchmark Exam paper -- checking it would reveal the answer."""

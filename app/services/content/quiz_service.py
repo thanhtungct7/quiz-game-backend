@@ -7,6 +7,7 @@ from app.repository.content.lesson_repository import LessonRepository
 from app.repository.content.unit_repository import UnitRepository
 from app.schemas.content.course_content import ChallengePublicRead
 from app.schemas.content.quiz import QuizSet, QuizSetWithAnswers, StageQuizSet
+from app.services.content import grading
 from app.services.content.challenge_presenter import to_public_challenge
 
 
@@ -154,7 +155,7 @@ class QuizService:
         for challenge in pool:
             if len(questions) == count:
                 break
-            correct_ids = _battle_answer_key(challenge)
+            correct_ids = grading.answer_key(challenge)
             if not correct_ids:
                 continue
             questions.append(to_public_challenge(challenge, rng))
@@ -164,6 +165,33 @@ class QuizService:
         return QuizSetWithAnswers(
             questions=questions, answer_key=answer_key, explanations=explanations
         )
+
+    async def draw_for_benchmark(
+        self,
+        lesson_ids: list[str],
+        per_lesson: int,
+        count: int,
+        seed: int | None = None,
+    ) -> list[ChallengePublicRead]:
+        """Draw one Benchmark Exam paper across the given lessons.
+
+        `per_lesson` from each lesson so the paper spans every unit it is drawn
+        from, then shuffled and cut to `count`. Challenges with no answer to
+        grade against are dropped rather than served as unanswerable questions.
+        The key is not returned: an exam answer is graded by loading the
+        challenge again, the same way a study answer is.
+        """
+        rng = random.Random(seed)  # noqa: S311 -- shuffling quiz questions, not security-sensitive
+        pool: list[Challenge] = []
+        for lesson_id in lesson_ids:
+            candidates = await self.challenges.list_by_lesson_filtered(
+                lesson_id, None, None, limit=per_lesson * 2
+            )
+            answerable = [challenge for challenge in candidates if grading.answer_key(challenge)]
+            pool.extend(answerable[:per_lesson])
+
+        rng.shuffle(pool)
+        return [to_public_challenge(challenge, rng) for challenge in pool[:count]]
 
     async def _draw_questions(
         self,
@@ -190,19 +218,3 @@ class QuizService:
         rng.shuffle(selected)
         return [to_public_challenge(challenge, rng) for challenge in selected]
 
-
-def _battle_answer_key(challenge: Challenge) -> list[str]:
-    """The option ids a battle grades this challenge against.
-
-    For a single-choice challenge that is its correct options -- normally one,
-    and order means nothing. For an ORDER challenge every tile is flagged
-    correct, so a set of them says nothing at all; the key carries the solution
-    *in order* instead, which is what `order_index` spells out. An empty list
-    either way means the challenge has no answer to grade against and must not
-    be served.
-    """
-    if challenge.type is ChallengeType.ORDER:
-        return [
-            option.id for option in sorted(challenge.options, key=lambda o: o.order_index)
-        ]
-    return [option.id for option in challenge.options if option.correct]

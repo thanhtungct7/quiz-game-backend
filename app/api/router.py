@@ -11,7 +11,7 @@ from app.api.routes.content import (
     units,
 )
 from app.api.routes.duo import duo, duo_ws
-from app.api.routes.game import game
+from app.api.routes.game import benchmark_exam, game
 from app.api.routes.profile import profile
 from app.api.routes.progress import progress
 from app.api.routes.pve import battle, battle_ws
@@ -30,6 +30,9 @@ api_router.include_router(profile.router, prefix="/profile", tags=["profile"])
 api_router.include_router(duo.router, prefix="/duo", tags=["duo"])
 api_router.include_router(duo_ws.router, prefix="/duo", tags=["duo"])
 api_router.include_router(game.router, prefix="/game", tags=["game"])
+api_router.include_router(
+    benchmark_exam.router, prefix="/game/benchmark-exam", tags=["game"]
+)
 api_router.include_router(battle.router, prefix="/battles", tags=["pve"])
 api_router.include_router(battle_ws.router, prefix="/battles", tags=["pve"])
 

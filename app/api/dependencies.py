@@ -23,6 +23,7 @@ from app.repository.duo.duo_match_repository import DuoMatchRepository
 from app.repository.duo.duo_rating_repository import DuoRatingRepository
 from app.repository.game.achievement_repository import AchievementRepository
 from app.repository.game.activity_repository import ActivityRepository
+from app.repository.game.benchmark_exam_repository import BenchmarkExamRepository
 from app.repository.game.catalog_repository import CatalogRepository
 from app.repository.game.game_profile_repository import GameProfileRepository
 from app.repository.game.gold_transaction_repository import GoldTransactionRepository
@@ -46,6 +47,7 @@ from app.services.content.course_content_service import CourseContentService
 from app.services.content.quiz_service import QuizService
 from app.services.duo.duo_service import DuoService
 from app.services.game.achievement_service import AchievementService
+from app.services.game.benchmark_exam_service import BenchmarkExamService
 from app.services.game.game_service import GameService
 from app.services.game.lesson_rewards import LessonRewardService
 from app.services.profile.profile_service import ProfileService
@@ -261,6 +263,19 @@ def get_battle_service(db: DatabaseSession) -> BattleService:
     )
 
 
+def get_benchmark_exam_service(db: DatabaseSession) -> BenchmarkExamService:
+    return BenchmarkExamService(
+        attempts=BenchmarkExamRepository(db),
+        profiles=GameProfileRepository(db),
+        game=get_game_service(db),
+        quiz=get_quiz_service(db),
+        challenges=ChallengeRepository(db),
+        courses=CourseRepository(db),
+        lessons=LessonRepository(db),
+        progress=UserProgressRepository(db),
+    )
+
+
 AdminUser = Annotated[User, Depends(get_current_admin_user)]
 AuthServiceDependency = Annotated[AuthService, Depends(get_auth_service)]
 PasswordResetServiceDependency = Annotated[
@@ -273,6 +288,9 @@ QuizServiceDependency = Annotated[QuizService, Depends(get_quiz_service)]
 ProgressServiceDependency = Annotated[ProgressService, Depends(get_progress_service)]
 DuoServiceDependency = Annotated[DuoService, Depends(get_duo_service)]
 GameServiceDependency = Annotated[GameService, Depends(get_game_service)]
+BenchmarkExamServiceDependency = Annotated[
+    BenchmarkExamService, Depends(get_benchmark_exam_service)
+]
 UserServiceDependency = Annotated[UserService, Depends(get_user_service)]
 BattleServiceDependency = Annotated[BattleService, Depends(get_battle_service)]
 ProfileServiceDependency = Annotated[ProfileService, Depends(get_profile_service)]

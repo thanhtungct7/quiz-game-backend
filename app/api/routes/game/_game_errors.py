@@ -3,8 +3,17 @@ from typing import NoReturn
 from fastapi import HTTPException, status
 
 from app.core.exceptions import (
+    BenchmarkExamAlreadyClearedError,
+    BenchmarkExamAttemptClosedError,
+    BenchmarkExamAttemptNotFoundError,
     BenchmarkExamNotEligibleError,
+    BenchmarkExamNotEnoughQuestionsError,
+    BenchmarkExamQuestionAlreadyAnsweredError,
+    BenchmarkExamQuestionNotInAttemptError,
+    ChallengeNotFoundError,
+    ChallengeOptionNotFoundError,
     GameClassNotFoundError,
+    InvalidAnswerSubmissionError,
     InvalidEquipmentError,
     InvalidLoadoutError,
     ItemAlreadyOwnedError,
@@ -20,6 +29,8 @@ _NOT_FOUND_ERRORS = (
     GameClassNotFoundError,
     SkillNotFoundError,
     ItemNotFoundError,
+    BenchmarkExamAttemptNotFoundError,
+    ChallengeNotFoundError,
 )
 # Conditions the caller could fix by choosing differently, all 400.
 _BAD_REQUEST_ERRORS = (
@@ -29,11 +40,20 @@ _BAD_REQUEST_ERRORS = (
     InvalidEquipmentError,
     BenchmarkExamNotEligibleError,
     ItemNotForSaleError,
+    BenchmarkExamQuestionNotInAttemptError,
+    InvalidAnswerSubmissionError,
+    # An option id that is not on the question is a malformed answer here, not
+    # a missing resource the caller could go and find.
+    ChallengeOptionNotFoundError,
 )
 # Already have it, so the request is not wrong -- it is simply too late.
 _CONFLICT_ERRORS = (
     SkillAlreadyOwnedError,
     ItemAlreadyOwnedError,
+    BenchmarkExamAlreadyClearedError,
+    BenchmarkExamAttemptClosedError,
+    BenchmarkExamQuestionAlreadyAnsweredError,
+    BenchmarkExamNotEnoughQuestionsError,
 )
 
 

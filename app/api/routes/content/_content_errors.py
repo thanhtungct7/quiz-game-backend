@@ -3,6 +3,7 @@ from typing import NoReturn
 from fastapi import HTTPException, status
 
 from app.core.exceptions import (
+    ChallengeLockedByExamError,
     ChallengeNotFoundError,
     ChallengeOptionNotFoundError,
     CourseNotFoundError,
@@ -29,6 +30,7 @@ _BAD_REQUEST_ERRORS = (
     DuplicateOrderIndexError,
     DuplicateTopicNameError,
 )
+_CONFLICT_ERRORS = (ChallengeLockedByExamError,)
 
 
 def raise_content_http_error(exc: Exception) -> NoReturn:
@@ -38,6 +40,8 @@ def raise_content_http_error(exc: Exception) -> NoReturn:
             status_code=status.HTTP_404_NOT_FOUND,
             detail=str(exc) or "Resource not found",
         ) from exc
+    if isinstance(exc, _CONFLICT_ERRORS):
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
     if isinstance(exc, _BAD_REQUEST_ERRORS):
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
     raise exc

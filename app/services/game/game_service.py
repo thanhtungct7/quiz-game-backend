@@ -56,7 +56,6 @@ from app.services.game.leveling import (
     effective_level,
     exp_for_level,
     exp_to_next_level,
-    level_for_exp,
     pending_benchmark_level,
 )
 from app.services.game.loot import RewardBonus, total_bonus
@@ -137,26 +136,25 @@ class GameService:
 
     # --- benchmark exam --------------------------------------------------------
 
-    async def record_benchmark_pass(self, user_id: str, cap_level: int) -> GameProfileRead:
-        """Clear one chốt chặn năng lực: the caller (the Benchmark Exam
-        grading flow) asserts a pass, and this is where that becomes a raised
-        `benchmark_cleared_level`.
+    async def clear_benchmark_cap(self, user_id: str, cap_level: int) -> GameProfileRead:
+        """Clear one chốt chặn năng lực: the outcome of a graded Benchmark Exam
+        sitting becomes a raised `benchmark_cleared_level`.
 
-        Refused for a cap the player's raw level has not reached yet -- an
-        exam cannot be sat early -- and for anything not in `LEVEL_CAPS`, so a
-        stray level number can never be recorded as cleared. Passing the same
-        cap twice, or a lower one than already held, is a no-op rather than an
-        error: `benchmark_cleared_level` only ever rises.
+        Only `BenchmarkExamService` calls this, and only for a sitting it has
+        graded as a pass -- there is no route that reaches it with a verdict
+        from the client. Whether the cap could be sat at all was decided when
+        the sitting opened, so it is not decided again here: experience that
+        moved in the meantime must not take back a pass already earned.
+
+        Anything not in `LEVEL_CAPS` is still refused, so a stray level number
+        can never be recorded as cleared. Clearing the same cap twice, or a
+        lower one than already held, is a no-op rather than an error:
+        `benchmark_cleared_level` only ever rises.
         """
         if cap_level not in LEVEL_CAPS:
             raise BenchmarkExamNotEligibleError(f"{cap_level} is not a level cap")
 
         profile = await self._ensure_profile(user_id)
-        if level_for_exp(profile.total_exp) < cap_level:
-            raise BenchmarkExamNotEligibleError(
-                f"Level {cap_level} has not been reached yet"
-            )
-
         if cap_level > profile.benchmark_cleared_level:
             await self.profiles.save(
                 profile,

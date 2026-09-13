@@ -1,15 +1,11 @@
-from dataclasses import dataclass
 from datetime import UTC, datetime
 
 from app.core.exceptions import (
     ChallengeNotFoundError,
-    ChallengeOptionNotFoundError,
     CourseNotFoundError,
-    InvalidAnswerSubmissionError,
     LessonNotFoundError,
     UnitNotFoundError,
 )
-from app.models.content.challenge import Challenge, ChallengeType
 from app.models.progress.user_challenge_progress import UserChallengeProgress
 from app.models.progress.user_lesson_progress import LessonProgressStatus, UserLessonProgress
 from app.repository.content.challenge_repository import ChallengeRepository
@@ -23,17 +19,8 @@ from app.schemas.progress.progress import (
     LessonProgressRead,
     UnitProgressRead,
 )
+from app.services.content.grading import grade
 from app.services.game.lesson_rewards import LessonRewardService
-
-
-@dataclass(frozen=True)
-class _GradedAnswer:
-    """One graded submission, in the shape `AnswerCheckResult` needs it."""
-
-    correct: bool
-    recorded_option_id: str | None
-    submitted_option_ids: list[str]
-    correct_option_ids: list[str]
 
 
 class ProgressService:
@@ -78,10 +65,7 @@ class ProgressService:
         if challenge is None:
             raise ChallengeNotFoundError(challenge_id)
 
-        if challenge.type is ChallengeType.ORDER:
-            graded = self._grade_ordered(challenge, selected_option_ids)
-        else:
-            graded = self._grade_single_choice(challenge, selected_option_id)
+        graded = grade(challenge, selected_option_id, selected_option_ids)
 
         await self._record_attempt(
             user_id, challenge.id, challenge.lesson_id, graded.recorded_option_id, graded.correct
@@ -95,69 +79,6 @@ class ProgressService:
             correct=graded.correct,
             correct_option_ids=graded.correct_option_ids,
             explanation=challenge.explanation,
-        )
-
-    @staticmethod
-    def _grade_single_choice(
-        challenge: Challenge, selected_option_id: str | None
-    ) -> "_GradedAnswer":
-        if selected_option_id is None:
-            raise InvalidAnswerSubmissionError(
-                f"{challenge.type.value} challenges are answered with selected_option_id"
-            )
-        selected = next(
-            (option for option in challenge.options if option.id == selected_option_id), None
-        )
-        if selected is None:
-            raise ChallengeOptionNotFoundError(selected_option_id)
-
-        return _GradedAnswer(
-            correct=selected.correct,
-            recorded_option_id=selected.id,
-            submitted_option_ids=[selected.id],
-            correct_option_ids=[
-                option.id for option in challenge.options if option.correct
-            ],
-        )
-
-    @staticmethod
-    def _grade_ordered(
-        challenge: Challenge, selected_option_ids: list[str] | None
-    ) -> "_GradedAnswer":
-        """Grade a word-ordering answer against the stored option order.
-
-        Compares the *words*, not the option ids: a sentence can repeat a word
-        ("càng ... càng ..."), and two tiles carrying the same text are
-        interchangeable — swapping them still spells the right sentence, so
-        marking that wrong would be marking a correct answer wrong.
-
-        Every tile has to be used. A partial sequence that happens to prefix
-        the solution is not the sentence.
-        """
-        if selected_option_ids is None:
-            raise InvalidAnswerSubmissionError(
-                "ORDER challenges are answered with selected_option_ids"
-            )
-
-        options_by_id = {option.id: option for option in challenge.options}
-        for option_id in selected_option_ids:
-            if option_id not in options_by_id:
-                raise ChallengeOptionNotFoundError(option_id)
-        if len(set(selected_option_ids)) != len(selected_option_ids):
-            raise InvalidAnswerSubmissionError("An option may only be placed once")
-
-        solution = sorted(challenge.options, key=lambda option: option.order_index)
-        submitted_words = [options_by_id[option_id].text for option_id in selected_option_ids]
-        correct = submitted_words == [option.text for option in solution]
-
-        return _GradedAnswer(
-            correct=correct,
-            # There is no single "selected option" to remember here; the row
-            # records that the challenge was attempted and whether it was right.
-            recorded_option_id=None,
-            submitted_option_ids=list(selected_option_ids),
-            # A sequence, not a set: this is the sentence in the right order.
-            correct_option_ids=[option.id for option in solution],
         )
 
     async def get_lesson_progress(self, user_id: str, lesson_id: str) -> LessonProgressRead:

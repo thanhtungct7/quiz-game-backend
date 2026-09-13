@@ -29,6 +29,17 @@ def _make_user() -> User:
     return User(id="user-1", email="user@example.com")
 
 
+class FakeExamService:
+    """Stands in for `BenchmarkExamService.is_challenge_locked`, the only part
+    of it the check route reads."""
+
+    def __init__(self, locked: set[str] | None = None) -> None:
+        self.locked = locked or set()
+
+    async def is_challenge_locked(self, user_id: str, challenge_id: str) -> bool:
+        return challenge_id in self.locked
+
+
 class FailingProgressService:
     def __init__(self, error: Exception) -> None:
         self.error = error
@@ -93,9 +104,34 @@ async def test_check_answer_maps_challenge_not_found_to_404() -> None:
             AnswerCheckRequest(selected_option_id="opt-1"),
             _make_user(),  # type: ignore[arg-type]
             service,  # type: ignore[arg-type]
+            FakeExamService(),  # type: ignore[arg-type]
         )
 
     assert raised.value.status_code == status.HTTP_404_NOT_FOUND
+
+
+@pytest.mark.asyncio
+async def test_check_answer_is_refused_for_a_question_on_the_open_exam_paper() -> None:
+    expected = AnswerCheckResult(
+        challenge_id="c0",
+        selected_option_id="c0-a",
+        selected_option_ids=["c0-a"],
+        correct=True,
+        correct_option_ids=["c0-a"],
+        explanation=None,
+    )
+    service = FakeProgressService(answer_result=expected)
+
+    with pytest.raises(HTTPException) as raised:
+        await check_answer(
+            "c0",
+            AnswerCheckRequest(selected_option_id="c0-a"),
+            _make_user(),  # type: ignore[arg-type]
+            service,  # type: ignore[arg-type]
+            FakeExamService(locked={"c0"}),  # type: ignore[arg-type]
+        )
+
+    assert raised.value.status_code == status.HTTP_409_CONFLICT
 
 
 @pytest.mark.asyncio
@@ -115,6 +151,7 @@ async def test_check_answer_returns_service_result() -> None:
         AnswerCheckRequest(selected_option_id="c0-a"),
         _make_user(),  # type: ignore[arg-type]
         service,  # type: ignore[arg-type]
+        FakeExamService(locked={"another-question"}),  # type: ignore[arg-type]
     )
 
     assert result is expected
