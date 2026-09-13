@@ -1,7 +1,9 @@
 from fastapi import APIRouter
 
 from app.api.dependencies import CurrentUser, GameServiceDependency
+from app.api.rate_limit import limit_by_user
 from app.api.routes.game._game_errors import raise_game_http_error
+from app.core import rate_limit_policies as limits
 from app.core.exceptions import ApplicationError
 from app.models.game.game_item import EquipmentSlot
 from app.schemas.game.game import (
@@ -21,6 +23,10 @@ from app.schemas.game.game import (
 
 router = APIRouter()
 
+# Gold, class, skills and equipment share one allowance: none of them is worth
+# doing more than a few times a minute.
+_GAME_WRITE = [limit_by_user("game-write", limits.GAME_WRITE_PER_USER)]
+
 
 @router.get("/profile", response_model=GameProfileRead)
 async def get_my_game_profile(
@@ -38,7 +44,7 @@ async def list_classes(
     return await service.list_classes(current_user.id)
 
 
-@router.post("/class", response_model=GameProfileRead)
+@router.post("/class", response_model=GameProfileRead, dependencies=_GAME_WRITE)
 async def choose_class(
     payload: ChooseClassRequest,
     current_user: CurrentUser,
@@ -58,7 +64,7 @@ async def get_skill_tree(
     return await service.get_skill_tree(current_user.id)
 
 
-@router.post("/skills/{skill_id}/unlock", response_model=SkillNodeRead)
+@router.post("/skills/{skill_id}/unlock", response_model=SkillNodeRead, dependencies=_GAME_WRITE)
 async def unlock_skill(
     skill_id: str,
     current_user: CurrentUser,
@@ -78,7 +84,7 @@ async def get_loadout(
     return await service.get_loadout(current_user.id)
 
 
-@router.put("/loadout", response_model=LoadoutRead)
+@router.put("/loadout", response_model=LoadoutRead, dependencies=_GAME_WRITE)
 async def set_loadout(
     payload: LoadoutRequest,
     current_user: CurrentUser,
@@ -98,7 +104,7 @@ async def get_inventory(
     return await service.get_inventory(current_user.id)
 
 
-@router.put("/equipment", response_model=InventoryRead)
+@router.put("/equipment", response_model=InventoryRead, dependencies=_GAME_WRITE)
 async def set_equipment(
     payload: EquipmentRequest,
     current_user: CurrentUser,
@@ -117,7 +123,7 @@ async def set_equipment(
         raise_game_http_error(exc)
 
 
-@router.put("/skin", response_model=InventoryRead)
+@router.put("/skin", response_model=InventoryRead, dependencies=_GAME_WRITE)
 async def wear_skin(
     payload: WearSkinRequest,
     current_user: CurrentUser,
@@ -139,7 +145,7 @@ async def get_shop(
     return await service.get_shop(current_user.id)
 
 
-@router.post("/shop/{item_id}/purchase", response_model=ShopRead)
+@router.post("/shop/{item_id}/purchase", response_model=ShopRead, dependencies=_GAME_WRITE)
 async def purchase_item(
     item_id: str,
     current_user: CurrentUser,

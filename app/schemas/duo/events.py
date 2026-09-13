@@ -69,6 +69,8 @@ class ServerEvent(StrEnum):
 
 class ErrorCode(StrEnum):
     INVALID_PAYLOAD = "INVALID_PAYLOAD"
+    # Frames arriving faster than a person could send them; the extra ones are dropped.
+    RATE_LIMITED = "RATE_LIMITED"
     UNKNOWN_EVENT = "UNKNOWN_EVENT"
     ALREADY_IN_MATCH = "ALREADY_IN_MATCH"
     ALREADY_IN_QUEUE = "ALREADY_IN_QUEUE"

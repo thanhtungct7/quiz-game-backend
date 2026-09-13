@@ -3,7 +3,9 @@ from typing import Annotated
 from fastapi import APIRouter, Query
 
 from app.api.dependencies import CurrentUser, DuoServiceDependency
+from app.api.rate_limit import limit_by_user
 from app.api.routes.duo._duo_errors import raise_duo_http_error
+from app.core import rate_limit_policies as limits
 from app.core.exceptions import ApplicationError
 from app.schemas.duo.duo import (
     DuoLeaderboardRead,
@@ -54,7 +56,11 @@ async def get_leaderboard(
     return await service.get_leaderboard(current_user.id, limit, season)
 
 
-@router.get("/rooms/{room_code}", response_model=DuoRoomPreview)
+@router.get(
+    "/rooms/{room_code}",
+    response_model=DuoRoomPreview,
+    dependencies=[limit_by_user("room-preview", limits.ROOM_PREVIEW_PER_USER)],
+)
 async def preview_room(
     room_code: str, current_user: CurrentUser, service: DuoServiceDependency
 ) -> DuoRoomPreview:

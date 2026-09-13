@@ -3,6 +3,8 @@ from typing import Annotated
 from fastapi import APIRouter, File, HTTPException, Response, UploadFile, status
 
 from app.api.dependencies import CurrentUser, UserServiceDependency
+from app.api.rate_limit import limit_by_user
+from app.core import rate_limit_policies as limits
 from app.core.config import settings
 from app.core.exceptions import (
     AvatarNotFoundError,
@@ -37,7 +39,11 @@ async def update_current_user(
     return build_user_read(updated, settings)
 
 
-@router.post("/me/avatar", response_model=UserRead)
+@router.post(
+    "/me/avatar",
+    response_model=UserRead,
+    dependencies=[limit_by_user("avatar-upload", limits.AVATAR_UPLOAD_PER_USER)],
+)
 async def upload_current_user_avatar(
     current_user: CurrentUser,
     user_service: UserServiceDependency,

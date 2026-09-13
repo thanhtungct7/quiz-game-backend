@@ -11,6 +11,7 @@ from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 from pydantic import BaseModel, ValidationError
 
 from app.api.dependencies import CurrentWebSocketUser
+from app.api.rate_limit import FrameThrottle, admit_websocket
 from app.models.auth.user import User
 from app.schemas.pve.events import (
     AnswerSubmitPayload,
@@ -38,11 +39,18 @@ async def battle_websocket(websocket: WebSocket, user: CurrentWebSocketUser) -> 
     The `finally` always runs `on_disconnect`, which ends the fight: a battle
     is not resumable, by design.
     """
+    if not await admit_websocket(websocket, "battle", user.id):
+        return
     await websocket.accept()
     await engine.on_connect(user, websocket)
+    throttle = FrameThrottle()
     try:
         while True:
             raw = await websocket.receive_text()
+            if not throttle.allow():
+                if throttle.should_warn():
+                    await _error(websocket, ErrorCode.RATE_LIMITED, "Too many messages")
+                continue
             await _dispatch(user, websocket, raw)
     except WebSocketDisconnect:
         pass

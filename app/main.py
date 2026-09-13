@@ -11,7 +11,9 @@ from fastapi.responses import JSONResponse
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 
 from app.api.dependencies import close_avatar_storage
+from app.api.rate_limit import RateLimitedError, check, request_ip, too_many_requests
 from app.api.router import api_router
+from app.core import rate_limit_policies as limits
 from app.core.config import settings
 from app.core.logging import configure_logging
 from app.db.session import AsyncSessionFactory, engine
@@ -104,6 +106,23 @@ app.add_middleware(
     allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
     allow_headers=["Authorization", "Content-Type", "X-Request-ID"],
 )
+
+
+@app.middleware("http")
+async def limit_request_rate(request: Request, call_next):  # type: ignore[no-untyped-def]
+    """The per-IP safety net under every route's own limit. Health checks are
+    exempt: a load balancer polling them must never be told to back off."""
+    if not request.url.path.startswith(f"{settings.api_v1_prefix}/health"):
+        try:
+            check(f"global:ip:{request_ip(request)}", limits.GLOBAL_PER_IP)
+        except RateLimitedError as exc:
+            error = too_many_requests(exc.retry_after)
+            return JSONResponse(
+                status_code=error.status_code,
+                content={"detail": error.detail},
+                headers=error.headers,
+            )
+    return await call_next(request)
 
 
 @app.middleware("http")

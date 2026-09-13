@@ -4,6 +4,8 @@ from typing import Literal
 from pydantic import AnyUrl, EmailStr, Field, SecretStr, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+from app.core.rate_limit import IPNetwork, parse_networks
+
 DEFAULT_DEVELOPMENT_SECRET = "development-only-change-this-secret"  # noqa: S105
 
 
@@ -27,6 +29,14 @@ class Settings(BaseSettings):
     database_url: str = "postgresql+asyncpg://quiz:quiz@localhost:5432/quiz"
     cors_origins: list[str] = ["http://localhost:3000"]
     allowed_hosts: list[str] = ["localhost", "127.0.0.1", "10.0.2.2", "testserver"]
+
+    # See app/core/rate_limit.py. Off only to take the limits out of a local experiment.
+    rate_limit_enabled: bool = True
+    # Reverse proxies whose X-Forwarded-For is believed, as IPs or CIDRs -- e.g.
+    # TRUSTED_PROXIES='["172.18.0.0/16"]' for the compose network. Left empty, the
+    # peer address is taken as the client, which behind a proxy puts every user in
+    # one bucket.
+    trusted_proxies: list[str] = []
     # AnyUrl, not AnyHttpUrl: the Android client is reached through its own URI scheme
     # (quizgame://reset-password), which AnyHttpUrl would reject.
     password_reset_url: AnyUrl = AnyUrl(  # noqa: S105 (URL, not a secret)
@@ -92,6 +102,10 @@ class Settings(BaseSettings):
         )
 
     @property
+    def trusted_proxy_networks(self) -> list[IPNetwork]:
+        return parse_networks(self.trusted_proxies)
+
+    @property
     def is_production(self) -> bool:
         return self.environment == "production"
 
@@ -109,6 +123,10 @@ class Settings(BaseSettings):
             )
         if self.environment in {"staging", "production"} and self.debug:
             raise ValueError("DEBUG must be false in staging and production")
+        try:
+            parse_networks(self.trusted_proxies)
+        except ValueError as exc:
+            raise ValueError(f"TRUSTED_PROXIES must be IPs or CIDRs: {exc}") from exc
         if "*" in self.cors_origins:
             raise ValueError("Wildcard CORS origins are not allowed")
         if self.smtp_use_ssl and self.smtp_start_tls:

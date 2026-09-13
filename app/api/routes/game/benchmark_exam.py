@@ -3,7 +3,9 @@ from typing import Annotated
 from fastapi import APIRouter, Query, status
 
 from app.api.dependencies import BenchmarkExamServiceDependency, CurrentUser
+from app.api.rate_limit import limit_by_user
 from app.api.routes.game._game_errors import raise_game_http_error
+from app.core import rate_limit_policies as limits
 from app.core.exceptions import ApplicationError
 from app.schemas.game.benchmark_exam import (
     BenchmarkAnswerAck,
@@ -21,6 +23,7 @@ router = APIRouter()
     "/attempts",
     response_model=BenchmarkAttemptRead,
     status_code=status.HTTP_201_CREATED,
+    dependencies=[limit_by_user("exam-start", limits.EXAM_START_PER_USER)],
 )
 async def start_attempt(
     payload: BenchmarkAttemptStartRequest,
@@ -34,7 +37,11 @@ async def start_attempt(
         raise_game_http_error(exc)
 
 
-@router.post("/attempts/{attempt_id}/answers", response_model=BenchmarkAnswerAck)
+@router.post(
+    "/attempts/{attempt_id}/answers",
+    response_model=BenchmarkAnswerAck,
+    dependencies=[limit_by_user("exam-answer", limits.EXAM_ANSWER_PER_USER)],
+)
 async def answer_question(
     attempt_id: str,
     payload: BenchmarkAnswerRequest,

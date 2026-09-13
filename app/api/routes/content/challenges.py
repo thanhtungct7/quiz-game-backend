@@ -6,7 +6,9 @@ from app.api.dependencies import (
     CurrentUser,
     ProgressServiceDependency,
 )
+from app.api.rate_limit import limit_by_user
 from app.api.routes.content._content_errors import raise_content_http_error
+from app.core import rate_limit_policies as limits
 from app.core.exceptions import ApplicationError, ChallengeLockedByExamError
 from app.schemas.content.course_content import ChallengePublicRead
 from app.schemas.content.quiz import AnswerCheckRequest, AnswerCheckResult
@@ -26,7 +28,11 @@ async def get_challenge(
     return to_public_challenge(challenge)
 
 
-@router.post("/{challenge_id}/check", response_model=AnswerCheckResult)
+@router.post(
+    "/{challenge_id}/check",
+    response_model=AnswerCheckResult,
+    dependencies=[limit_by_user("check-answer", limits.CHECK_ANSWER_PER_USER)],
+)
 async def check_answer(
     challenge_id: str,
     data: AnswerCheckRequest,
