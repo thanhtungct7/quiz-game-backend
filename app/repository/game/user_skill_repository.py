@@ -14,12 +14,15 @@ class UserSkillRepository:
         result = await self.db.execute(statement)
         return set(result.scalars().all())
 
-    async def grant(self, user_id: str, skill_id: str) -> UserSkill:
-        record = UserSkill(user_id=user_id, skill_id=skill_id)
-        self.db.add(record)
-        await self.db.commit()
-        await self.db.refresh(record)
-        return record
+    async def grant(self, user_id: str, skill_id: str) -> None:
+        """Stage one owned skill without committing.
+
+        Same contract as `ItemRepository.add_to_inventory`: the caller pairs
+        this with the write that pays for it, so the skill and the charge land
+        together. Committing here instead would mean two commits, and a failure
+        between them takes the gold without handing over the skill.
+        """
+        self.db.add(UserSkill(user_id=user_id, skill_id=skill_id))
 
     async def grant_many(self, user_id: str, skill_ids: list[str]) -> None:
         if not skill_ids:

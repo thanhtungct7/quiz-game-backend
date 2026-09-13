@@ -14,8 +14,10 @@ from app.schemas.game.game import (
     LoadoutRead,
     LoadoutRequest,
     SeasonRead,
+    ShopRead,
     SkillNodeRead,
     SkillTreeRead,
+    WearSkinRequest,
 )
 
 router = APIRouter()
@@ -129,6 +131,41 @@ async def set_equipment(
                 EquipmentSlot.TRINKET: payload.trinket_id,
             },
         )
+    except ApplicationError as exc:
+        raise_game_http_error(exc)
+
+
+@router.put("/skin", response_model=InventoryRead)
+async def wear_skin(
+    payload: WearSkinRequest,
+    current_user: CurrentUser,
+    service: GameServiceDependency,
+) -> InventoryRead:
+    """Put an owned skin on show. A null code takes the current one off."""
+    try:
+        return await service.wear_skin(current_user.id, payload.skin_code)
+    except ApplicationError as exc:
+        raise_game_http_error(exc)
+
+
+@router.get("/shop", response_model=ShopRead)
+async def get_shop(
+    current_user: CurrentUser,
+    service: GameServiceDependency,
+) -> ShopRead:
+    """The cosmetics on sale and what the player can afford them with."""
+    return await service.get_shop(current_user.id)
+
+
+@router.post("/shop/{item_id}/purchase", response_model=ShopRead)
+async def purchase_item(
+    item_id: str,
+    current_user: CurrentUser,
+    service: GameServiceDependency,
+) -> ShopRead:
+    """Buy one cosmetic. Returns the refreshed shelf, new balance included."""
+    try:
+        return await service.purchase_item(current_user.id, item_id)
     except ApplicationError as exc:
         raise_game_http_error(exc)
 

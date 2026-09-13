@@ -366,7 +366,7 @@ class GameSettlementService:
             return None
         pool = [
             ItemDrop(item_id=item.id, code=item.code, name=item.name, rarity=item.rarity)
-            for item in await self.items.list_items()
+            for item in await self.items.drop_pool()
         ]
         drop = roll_item(self.rng, pool, won=won)
         # The claim goes in even when nothing dropped, so an empty catalog

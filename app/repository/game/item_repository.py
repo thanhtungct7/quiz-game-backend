@@ -10,9 +10,25 @@ class ItemRepository:
     def __init__(self, db: AsyncSession) -> None:
         self.db = db
 
-    async def list_items(self) -> list[GameItem]:
+    async def list_purchasable(self) -> list[GameItem]:
+        """The shop's shelf: active rows carrying a price, cheapest first."""
         statement = (
-            select(GameItem).where(GameItem.is_active.is_(True)).order_by(GameItem.code)
+            select(GameItem)
+            .where(GameItem.is_active.is_(True), GameItem.gold_price > 0)
+            .order_by(GameItem.gold_price, GameItem.code)
+        )
+        result = await self.db.execute(statement)
+        return list(result.scalars().all())
+
+    async def drop_pool(self) -> list[GameItem]:
+        """What a chest can contain: everything active that is *not* for sale.
+
+        The complement of `list_purchasable`, so an item is reachable exactly
+        one way. Buying a skin the next chest could have given away free is
+        the fastest way to make a currency feel worthless.
+        """
+        statement = select(GameItem).where(
+            GameItem.is_active.is_(True), GameItem.gold_price == 0
         )
         result = await self.db.execute(statement)
         return list(result.scalars().all())

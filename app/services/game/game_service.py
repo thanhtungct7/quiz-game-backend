@@ -9,10 +9,14 @@ from datetime import UTC, datetime
 from uuid import uuid4
 
 from app.core.exceptions import (
+    ApplicationError,
     BenchmarkExamNotEligibleError,
     GameClassNotFoundError,
     InvalidEquipmentError,
     InvalidLoadoutError,
+    ItemAlreadyOwnedError,
+    ItemNotForSaleError,
+    ItemNotFoundError,
     NotEnoughGoldError,
     SkillAlreadyOwnedError,
     SkillLockedError,
@@ -40,6 +44,8 @@ from app.schemas.game.game import (
     LoadoutRead,
     LoadoutSlotRead,
     SeasonRead,
+    ShopItemRead,
+    ShopRead,
     SkillLockReason,
     SkillNodeRead,
     SkillTreeRead,
@@ -353,6 +359,11 @@ class GameService:
         if reason is not None:
             raise SkillLockedError(f"{skill.name} is not available yet: {reason.value}")
 
+        # Staged before the charge, not after it. `_spend_gold` writes the new
+        # balance last, so the skill and what it cost land in one commit;
+        # granting afterwards left a window where a failure in between took the
+        # gold and handed over nothing.
+        await self.skills.grant(user_id, skill_id)
         if skill.gold_price > 0:
             await self._spend_gold(
                 user_id,
@@ -362,7 +373,10 @@ class GameService:
                 ref_id=skill.id,
                 balance=profile.gold,
             )
-        await self.skills.grant(user_id, skill_id)
+        else:
+            # An ultimate is earned by finishing a unit rather than paid for, so
+            # there is no balance write to carry the staged grant.
+            await self.profiles.save(profile, {"updated_at": datetime.now(UTC)})
 
         tree = await self.get_skill_tree(user_id)
         return next(node for node in tree.skills if node.id == skill_id)
@@ -415,7 +429,14 @@ class GameService:
     # --- gold ----------------------------------------------------------------
 
     async def _spend_gold(
-        self, user_id: str, *, amount: int, reason: GoldReason, ref_id: str, balance: int
+        self,
+        user_id: str,
+        *,
+        amount: int,
+        reason: GoldReason,
+        ref_id: str,
+        balance: int,
+        already_paid: type[ApplicationError] = SkillAlreadyOwnedError,
     ) -> None:
         if balance < amount:
             raise NotEnoughGoldError("Not enough gold")
@@ -429,8 +450,9 @@ class GameService:
         )
         if not granted:
             # A ledger row for this exact reference already exists, so this
-            # purchase has already been paid for.
-            raise SkillAlreadyOwnedError("That purchase has already been made")
+            # purchase has already been paid for. What that means depends on
+            # what was bought, so the caller names the error.
+            raise already_paid("That purchase has already been made")
         profile = await self.profiles.get_by_user(user_id)
         if profile is not None:
             await self.profiles.save(
@@ -440,7 +462,7 @@ class GameService:
     # --- inventory -----------------------------------------------------------
 
     async def get_inventory(self, user_id: str) -> InventoryRead:
-        await self._ensure_profile(user_id)
+        profile = await self._ensure_profile(user_id)
         equipped_ids = {
             item.id for _worn, item in await self.items.equipment(user_id)
         }
@@ -475,6 +497,7 @@ class GameService:
             items=rows,
             bonus_exp_permille=bonus.exp_permille,
             bonus_gold_permille=bonus.gold_permille,
+            skin_code=profile.skin_code,
         )
 
 
@@ -499,6 +522,93 @@ class GameService:
 
         await self.items.replace_equipment(user_id, by_slot)
         return await self.get_inventory(user_id)
+
+    async def wear_skin(self, user_id: str, skin_code: str | None) -> InventoryRead:
+        """Put one owned skin on show, or take the current one off with None.
+
+        Deliberately not routed through `set_equipment`: a skin occupies no
+        slot, competes with nothing, and moves no number -- it is the one thing
+        a player wears that the engine never reads. Sharing the equipment path
+        would mean widening the `equipment_slot` enum for something that has no
+        slot to sit in.
+        """
+        profile = await self._ensure_profile(user_id)
+
+        if skin_code is not None:
+            owned = {
+                item.code: item for _row, item in await self.items.owned(user_id)
+            }
+            item = owned.get(skin_code)
+            if item is None:
+                raise InvalidEquipmentError("You do not own that skin")
+            if item.kind is not ItemKind.SKIN:
+                raise InvalidEquipmentError(f"{item.name} is not a skin")
+
+        await self.profiles.save(
+            profile, {"skin_code": skin_code, "updated_at": datetime.now(UTC)}
+        )
+        return await self.get_inventory(user_id)
+
+    # --- shop ----------------------------------------------------------------
+
+    async def get_shop(self, user_id: str) -> ShopRead:
+        profile = await self._ensure_profile(user_id)
+        owned_ids = {item.id for _row, item in await self.items.owned(user_id)}
+        return ShopRead(
+            gold=profile.gold,
+            items=[
+                ShopItemRead(
+                    id=item.id,
+                    code=item.code,
+                    name=item.name,
+                    kind=item.kind,
+                    rarity=item.rarity,
+                    gold_price=item.gold_price,
+                    owned=item.id in owned_ids,
+                )
+                for item in await self.items.list_purchasable()
+            ],
+        )
+
+    async def purchase_item(self, user_id: str, item_id: str) -> ShopRead:
+        """Buy one cosmetic outright, and hand back the whole refreshed shelf.
+
+        Bought once and kept: `ref_id` is the item, so the ledger's unique
+        (user, reason, ref) is itself the guard against a double tap charging
+        twice. That is only sound because nothing on sale is consumable -- a
+        second copy of a skin would be worth nothing anyway, which is why the
+        ownership check below is a refusal rather than a top-up.
+
+        Order matters. Every refusal is settled *before* the inventory row is
+        staged, and `add_to_inventory` does not commit, so the item, the ledger
+        row and the new balance all land in the single commit inside
+        `_spend_gold`. Spending first and granting after -- the way
+        `unlock_skill` does it -- leaves a window where a crash takes the gold
+        without handing over the goods.
+        """
+        item = await self.items.get_item(item_id)
+        if item is None or not item.is_active:
+            raise ItemNotFoundError(f"No item with id {item_id}")
+        if item.gold_price <= 0:
+            raise ItemNotForSaleError(f"{item.name} is not for sale")
+
+        profile = await self._ensure_profile(user_id)
+        owned_ids = {owned.id for _row, owned in await self.items.owned(user_id)}
+        if item_id in owned_ids:
+            raise ItemAlreadyOwnedError(f"You already own {item.name}")
+        if profile.gold < item.gold_price:
+            raise NotEnoughGoldError(f"{item.name} costs {item.gold_price} gold")
+
+        await self.items.add_to_inventory(user_id, item_id)
+        await self._spend_gold(
+            user_id,
+            amount=item.gold_price,
+            reason=GoldReason.ITEM_PURCHASE,
+            ref_id=item_id,
+            balance=profile.gold,
+            already_paid=ItemAlreadyOwnedError,
+        )
+        return await self.get_shop(user_id)
 
     # --- season --------------------------------------------------------------
 

@@ -473,6 +473,28 @@ async def test_the_self_card_carries_the_private_half() -> None:
     assert card.gold == 42
 
 
+# --- the worn skin ----------------------------------------------------------
+
+
+async def test_the_card_reports_the_skin_the_player_is_wearing() -> None:
+    """What the client colours the character's plinth with -- see `heroGlowFor`."""
+    profile = _make_profile(skin_code="SKIN_NIGHT")
+    service = _service(FakeStatsRepository(found=(_make_user(), profile, None)))
+
+    card = await service.get_public("user-1")
+
+    assert card.skin_code == "SKIN_NIGHT"
+
+
+async def test_a_player_wearing_nothing_reports_no_skin() -> None:
+    """Not a default look: the client falls back to the CEFR band's colour."""
+    service = _service(FakeStatsRepository(found=(_make_user(), _make_profile(), None)))
+
+    card = await service.get_public("user-1")
+
+    assert card.skin_code is None
+
+
 # --- placeholders for modules that do not exist yet ------------------------
 
 
@@ -483,7 +505,6 @@ async def test_the_character_fields_answer_empty_for_now() -> None:
 
     assert card.title is None
     assert card.companion_character is None
-    assert card.skin_code is None
 
 
 # --- achievements on the card ----------------------------------------------

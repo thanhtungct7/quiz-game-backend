@@ -260,8 +260,8 @@ class FakeItemRepository:
         self.claims: list[tuple[str, str, str | None]] = []
         self.inventory: list[tuple[str, str]] = []
 
-    async def list_items(self) -> list[GameItem]:
-        return self.items
+    async def drop_pool(self) -> list[GameItem]:
+        return [item for item in self.items if item.gold_price == 0]
 
     async def equipment(self, user_id: str) -> list[tuple[object, GameItem]]:
         return [(None, item) for item in self.worn]
@@ -339,6 +339,7 @@ def _item(code: str) -> GameItem:
         rarity=ItemRarity.COMMON,
         bonus_exp_permille=0,
         bonus_gold_permille=0,
+        gold_price=0,
         is_active=True,
     )
 

@@ -333,6 +333,7 @@ def _public_read(
         cefr=cefr_for_level(level),
         toeic_estimate=toeic_estimate_for_level(level),
         class_code=profile.class_code if profile is not None else None,
+        skin_code=profile.skin_code if profile is not None else None,
         day_streak=profile.day_streak if profile is not None else 0,
         best_day_streak=profile.best_day_streak if profile is not None else 0,
         pvp=_pvp_read(rating),

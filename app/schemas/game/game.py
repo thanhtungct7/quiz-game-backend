@@ -146,6 +146,36 @@ class InventoryRead(BaseModel):
     # lesson will actually pay.
     bonus_exp_permille: int
     bonus_gold_permille: int
+    # The skin currently on show, or None for the CEFR band's own colour.
+    skin_code: str | None = None
+
+
+class WearSkinRequest(BaseModel):
+    # None takes the current one off rather than being a missing field.
+    skin_code: str | None = None
+
+
+class ShopItemRead(BaseModel):
+    """One row on the shelf.
+
+    No bonus fields: everything the shop sells is a zero-bonus cosmetic, so
+    there is nothing to report beyond what it looks like and what it costs.
+    """
+
+    id: str
+    code: str
+    name: str
+    kind: ItemKind
+    rarity: ItemRarity
+    gold_price: int
+    owned: bool
+
+
+class ShopRead(BaseModel):
+    # The balance travels with the shelf so a purchase's response leaves the
+    # client nothing stale to re-fetch.
+    gold: int
+    items: list[ShopItemRead]
 
 
 

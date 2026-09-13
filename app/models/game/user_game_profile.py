@@ -49,6 +49,11 @@ class UserGameProfile(Base):
     class_chosen_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
+    # The cosmetic currently on show, by `game_items.code`. NULL is "none", and
+    # the client falls back to the CEFR band's colour. Not a foreign key, for
+    # the same reason `class_code`'s target is a code rather than an id: this
+    # is read on the player card, which is fetched once per leaderboard row.
+    skin_code: Mapped[str | None] = mapped_column(String(32), nullable=True)
     # Regenerates lazily: nothing runs in the background, the pair below is
     # interpreted against the current time on every read.
     energy: Mapped[int] = mapped_column(

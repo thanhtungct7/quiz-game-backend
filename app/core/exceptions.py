@@ -140,6 +140,14 @@ class ItemNotFoundError(ApplicationError):
     """Raised when an item cannot be found."""
 
 
+class ItemAlreadyOwnedError(ApplicationError):
+    """Raised when buying an item the user already has."""
+
+
+class ItemNotForSaleError(ApplicationError):
+    """Raised when buying an item the shop does not stock."""
+
+
 class InvalidEquipmentError(ApplicationError):
     """Raised when a requested equipment set is not one the user can wear."""
 

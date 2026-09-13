@@ -37,6 +37,9 @@ dev = [
 include = ["app*"]
 
 [tool.pytest.ini_options]
+# The installed package is `app*` only, so `scripts/` is importable in tests
+# only if the repo root is on sys.path -- test_import_layout.py imports from it.
+pythonpath = ["."]
 testpaths = ["tests"]
 addopts = "-q"
 asyncio_mode = "auto"

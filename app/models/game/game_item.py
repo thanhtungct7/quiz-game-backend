@@ -38,6 +38,9 @@ class GameItem(Base):
     `combat.resolve_blow`. SKIN and CARD items are cosmetic and collectible
     and carry no bonus at all, which keeps the reward table interesting
     without letting it decide a payout either.
+
+    That last point is also what makes the shop safe: `gold_price` is only ever
+    set on those zero-bonus cosmetics, so gold buys a look and never an edge.
     """
 
     __tablename__ = "game_items"
@@ -59,6 +62,11 @@ class GameItem(Base):
         Integer, nullable=False, default=0, server_default="0"
     )
     bonus_gold_permille: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0, server_default="0"
+    )
+    # What the shop charges. 0 means the row is not for sale and can only be
+    # reached through a chest, which is every EQUIPMENT item.
+    gold_price: Mapped[int] = mapped_column(
         Integer, nullable=False, default=0, server_default="0"
     )
     image_src: Mapped[str | None] = mapped_column(String(255), nullable=True)

@@ -7,12 +7,19 @@ from app.main import app
 from app.models.auth.user import User
 from app.models.duo.duo_rating import DuoRating
 from app.models.game.game_class import GameClass
-from app.models.game.game_item import EquipmentSlot, GameItem
+from app.models.game.game_item import EquipmentSlot, GameItem, ItemKind
 from app.models.game.gold_transaction import GoldReason
 from app.models.game.season import GameSeason, SeasonRating
 from app.models.game.skill import Skill
 from app.models.game.user_game_profile import UserGameProfile
-from app.services.game.catalog import CLASSES, ITEMS, SKILLS, ULTIMATES, WARRIOR
+from app.services.game.catalog import (
+    CLASSES,
+    ITEMS,
+    SKILLS,
+    SKIN_PRICE_RARE,
+    ULTIMATES,
+    WARRIOR,
+)
 from app.services.game.cefr import LEVEL_CAPS
 from app.services.game.energy import MAX_ENERGY
 from app.services.game.game_service import CLASS_CHANGE_GOLD, GameService
@@ -188,8 +195,17 @@ class FakeItems:
         self.owned_counts = owned or {}
         self.worn: dict[EquipmentSlot, str] = {}
 
-    async def list_items(self) -> list[GameItem]:
-        return self.catalog
+    async def get_item(self, item_id: str) -> GameItem | None:
+        return next((item for item in self.catalog if item.id == item_id), None)
+
+    async def list_purchasable(self) -> list[GameItem]:
+        return [item for item in self.catalog if item.gold_price > 0]
+
+    async def drop_pool(self) -> list[GameItem]:
+        return [item for item in self.catalog if item.gold_price == 0]
+
+    async def add_to_inventory(self, user_id: str, item_id: str) -> None:
+        self.owned_counts[item_id] = self.owned_counts.get(item_id, 0) + 1
 
     async def owned(self, user_id: str) -> list[tuple[object, GameItem]]:
         by_id = {item.id: item for item in self.catalog}
@@ -314,6 +330,7 @@ def _profile(
     energy: int = MAX_ENERGY,
     day_streak: int = 0,
     benchmark_cleared_level: int = 0,
+    skin_code: str | None = None,
 ) -> UserGameProfile:
     """A profile as it comes back from the database: every column spelled out,
     because constructing the model outside a session skips the defaults."""
@@ -330,6 +347,7 @@ def _profile(
         best_day_streak=day_streak,
         last_active_date=None,
         benchmark_cleared_level=benchmark_cleared_level,
+        skin_code=skin_code,
     )
 
 
@@ -344,6 +362,7 @@ def _items() -> list[GameItem]:
             rarity=spec.rarity,
             bonus_exp_permille=spec.bonus_exp_permille,
             bonus_gold_permille=spec.bonus_gold_permille,
+            gold_price=spec.gold_price,
             is_active=True,
         )
         for spec in ITEMS
@@ -676,6 +695,29 @@ async def test_unlocking_an_ultimate_before_finishing_the_unit_is_a_400() -> Non
     assert response.status_code == 400
 
 
+async def test_unlocking_an_ultimate_costs_nothing_and_still_grants_it() -> None:
+    """The free path has no charge to carry its grant, so it commits on its own.
+
+    Worth its own test because the paid path and the free one now persist by
+    different routes: a paid unlock rides the balance write inside
+    `_spend_gold`, a free one has no balance write at all.
+    """
+    ultimate = f"skill-{ULTIMATES[0].code}"
+    harness = Harness(
+        profile=_profile(total_exp=5000, gold=300, class_code=WARRIOR),
+        completed_units={ULTIMATE_UNIT_ID},
+    )
+
+    response = await harness.request("POST", f"/skills/{ultimate}/unlock")
+
+    assert response.status_code == 200
+    assert response.json()["owned"] is True
+    assert ultimate in harness.skills.owned
+    assert harness.profiles.profile is not None
+    assert harness.profiles.profile.gold == 300
+    assert harness.ledger.rows == []
+
+
 async def test_unlocking_an_unknown_skill_is_a_404() -> None:
     harness = Harness(profile=_profile())
 
@@ -880,6 +922,172 @@ async def test_clearing_a_slot_removes_the_bonus() -> None:
     body = (await harness.request("PUT", "/equipment", {})).json()
 
     assert body["bonus_exp_permille"] == 0
+
+
+# --- wearing a skin ---------------------------------------------------------
+
+
+async def test_an_owned_skin_can_be_worn() -> None:
+    harness = Harness(profile=_profile(), owned_items={"item-SKIN_NIGHT": 1})
+
+    response = await harness.request("PUT", "/skin", {"skin_code": "SKIN_NIGHT"})
+
+    assert response.status_code == 200
+    assert response.json()["skin_code"] == "SKIN_NIGHT"
+    assert harness.profiles.profile is not None
+    assert harness.profiles.profile.skin_code == "SKIN_NIGHT"
+
+
+async def test_a_null_code_takes_the_skin_off() -> None:
+    harness = Harness(
+        profile=_profile(skin_code="SKIN_NIGHT"), owned_items={"item-SKIN_NIGHT": 1}
+    )
+
+    body = (await harness.request("PUT", "/skin", {"skin_code": None})).json()
+
+    assert body["skin_code"] is None
+
+
+async def test_a_skin_that_is_not_owned_cannot_be_worn() -> None:
+    harness = Harness(profile=_profile())
+
+    response = await harness.request("PUT", "/skin", {"skin_code": "SKIN_NIGHT"})
+
+    assert response.status_code == 400
+    assert harness.profiles.profile is not None
+    assert harness.profiles.profile.skin_code is None
+
+
+async def test_equipment_cannot_be_worn_as_a_skin() -> None:
+    harness = Harness(profile=_profile(), owned_items={"item-CHAIN_MAIL": 1})
+
+    response = await harness.request("PUT", "/skin", {"skin_code": "CHAIN_MAIL"})
+
+    assert response.status_code == 400
+
+
+async def test_the_inventory_reports_the_skin_on_show() -> None:
+    harness = Harness(
+        profile=_profile(skin_code="SKIN_SCHOLAR"), owned_items={"item-SKIN_SCHOLAR": 1}
+    )
+
+    body = (await harness.request("GET", "/items")).json()
+
+    assert body["skin_code"] == "SKIN_SCHOLAR"
+
+
+async def test_wearing_a_skin_moves_no_reward_bonus() -> None:
+    """The whole premise of a cosmetic shop, asserted end to end."""
+    harness = Harness(profile=_profile(), owned_items={"item-SKIN_LAUREATE": 1})
+
+    body = (await harness.request("PUT", "/skin", {"skin_code": "SKIN_LAUREATE"})).json()
+
+    assert body["bonus_exp_permille"] == 0
+    assert body["bonus_gold_permille"] == 0
+
+
+# --- shop ------------------------------------------------------------------
+
+
+def test_nothing_on_sale_can_move_a_number_a_match_reads() -> None:
+    """The shop's whole licence to exist: gold buys a look, never an edge.
+
+    Asserted against the catalog rather than a response, so pricing an item
+    that carries a buff fails here whoever adds it and whatever the API does.
+    """
+    for spec in ITEMS:
+        if spec.gold_price > 0:
+            assert spec.kind is ItemKind.SKIN, f"{spec.code} is priced but not a skin"
+            assert spec.bonus_exp_permille == 0, f"{spec.code} sells an EXP buff"
+            assert spec.bonus_gold_permille == 0, f"{spec.code} sells a Gold buff"
+
+
+def test_an_item_is_either_bought_or_dropped_never_both() -> None:
+    priced = {spec.code for spec in ITEMS if spec.gold_price > 0}
+    droppable = {spec.code for spec in ITEMS if spec.gold_price == 0}
+
+    assert priced and droppable
+    assert not priced & droppable
+
+
+async def test_the_shop_stocks_only_priced_items() -> None:
+    harness = Harness(profile=_profile(gold=1000))
+
+    body = (await harness.request("GET", "/shop")).json()
+
+    assert body["items"]
+    assert all(row["gold_price"] > 0 for row in body["items"])
+    assert all(row["kind"] == "SKIN" for row in body["items"])
+
+
+async def test_the_shop_reports_the_balance_and_what_is_already_owned() -> None:
+    harness = Harness(profile=_profile(gold=300), owned_items={"item-SKIN_NIGHT": 1})
+
+    body = (await harness.request("GET", "/shop")).json()
+
+    assert body["gold"] == 300
+    by_code = {row["code"]: row for row in body["items"]}
+    assert by_code["SKIN_NIGHT"]["owned"] is True
+    assert by_code["SKIN_SCHOLAR"]["owned"] is False
+
+
+async def test_buying_a_skin_charges_it_and_hands_it_over() -> None:
+    harness = Harness(profile=_profile(gold=1000))
+
+    response = await harness.request("POST", "/shop/item-SKIN_SCHOLAR/purchase")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["gold"] == 1000 - SKIN_PRICE_RARE
+    assert next(r for r in body["items"] if r["code"] == "SKIN_SCHOLAR")["owned"] is True
+    assert harness.items.owned_counts["item-SKIN_SCHOLAR"] == 1
+
+
+async def test_a_purchase_is_written_to_the_gold_ledger() -> None:
+    harness = Harness(profile=_profile(gold=1000))
+
+    await harness.request("POST", "/shop/item-SKIN_SCHOLAR/purchase")
+
+    assert harness.ledger.rows == [
+        ("user-1", GoldReason.ITEM_PURCHASE, "item-SKIN_SCHOLAR", -SKIN_PRICE_RARE)
+    ]
+
+
+async def test_buying_the_same_skin_twice_is_a_409_and_charges_once() -> None:
+    harness = Harness(profile=_profile(gold=1000))
+    await harness.request("POST", "/shop/item-SKIN_SCHOLAR/purchase")
+
+    response = await harness.request("POST", "/shop/item-SKIN_SCHOLAR/purchase")
+
+    assert response.status_code == 409
+    assert harness.profiles.profile is not None
+    assert harness.profiles.profile.gold == 1000 - SKIN_PRICE_RARE
+
+
+async def test_buying_without_the_gold_is_refused_and_grants_nothing() -> None:
+    harness = Harness(profile=_profile(gold=SKIN_PRICE_RARE - 1))
+
+    response = await harness.request("POST", "/shop/item-SKIN_SCHOLAR/purchase")
+
+    assert response.status_code == 400
+    assert harness.items.owned_counts == {}
+
+
+async def test_equipment_cannot_be_bought() -> None:
+    harness = Harness(profile=_profile(gold=10_000))
+
+    response = await harness.request("POST", "/shop/item-CHAIN_MAIL/purchase")
+
+    assert response.status_code == 400
+    assert harness.items.owned_counts == {}
+
+
+async def test_buying_an_unknown_item_is_a_404() -> None:
+    harness = Harness(profile=_profile(gold=1000))
+
+    response = await harness.request("POST", "/shop/item-NOPE/purchase")
+
+    assert response.status_code == 404
 
 
 # --- season ----------------------------------------------------------------

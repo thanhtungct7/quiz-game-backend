@@ -157,13 +157,17 @@ class PublicProfileRead(BaseModel):
     learning: LearningStatsRead
     combat: CombatStatsRead
 
+    # The cosmetic the player is wearing, from `user_game_profiles.skin_code`.
+    # Null means none is on, and the client falls back to the CEFR band's own
+    # colour rather than inventing a default look.
+    skin_code: str | None = None
+
     # Reserved for the character and achievement modules, which do not exist
     # yet. They are declared now, and answer null/empty until those modules
     # land, so the clients drawing this card do not have to be rewritten when
     # they do -- only this service gains a source.
     title: str | None = None
     companion_character: str | None = None
-    skin_code: str | None = None
 
     # The three most recently unlocked, which is what the overview tab draws.
     # Not the whole list: this payload is fetched for every row of a

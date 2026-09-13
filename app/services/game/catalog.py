@@ -404,6 +404,21 @@ class ItemSpec:
     # flavours the reward loop, it must never decide whether a match is won.
     bonus_exp_permille: int = 0
     bonus_gold_permille: int = 0
+    # What the shop charges, 0 for anything that is not for sale. Every item
+    # has exactly one way in: priced rows are shop-only and leave the chest
+    # pool (`ItemRepository.drop_pool`), unpriced rows are chest-only. Paying
+    # for something the next chest might hand over free is the one thing a
+    # cosmetic shop cannot afford to do.
+    gold_price: int = 0
+
+
+# Prices, for scale: a duo win pays 25 + 2 per correct answer (`rewards.py`),
+# a skill costs 150-600 and a class change 500. A common skin is a couple of
+# evenings, a legendary one is a season.
+SKIN_PRICE_COMMON = 120
+SKIN_PRICE_RARE = 250
+SKIN_PRICE_EPIC = 450
+SKIN_PRICE_LEGENDARY = 800
 
 
 # The weapon slot pays in Gold (a quest reward), the armour slot in EXP (study
@@ -412,6 +427,12 @@ class ItemSpec:
 # touching balance. Names and codes are unchanged from the RPG catalog on
 # purpose: the client's art and inventory already key off them, and only what
 # an item is *worth* changed, not what it is called.
+#
+# Only SKIN rows are priced. That is what makes the shop provably safe rather
+# than merely cheap: a skin's `bonus_*_permille` is zero, so no amount of gold
+# moves a single number a match or a lesson reads. Equipment stays chest-only
+# so the reward loop keeps its reason to exist, and cards stay chest-only
+# because a trophy that can be bought is not a trophy.
 ITEMS = (
     ItemSpec(
         code="WOODEN_SWORD",
@@ -482,16 +503,46 @@ ITEMS = (
         bonus_gold_permille=25,
     ),
     ItemSpec(
+        code="SKIN_ROOKIE",
+        name="Trang phục Tân binh",
+        kind=ItemKind.SKIN,
+        rarity=ItemRarity.COMMON,
+        gold_price=SKIN_PRICE_COMMON,
+    ),
+    ItemSpec(
         code="SKIN_SCHOLAR",
         name="Trang phục Học giả",
         kind=ItemKind.SKIN,
         rarity=ItemRarity.RARE,
+        gold_price=SKIN_PRICE_RARE,
+    ),
+    ItemSpec(
+        code="SKIN_OFFICE",
+        name="Trang phục Công sở",
+        kind=ItemKind.SKIN,
+        rarity=ItemRarity.RARE,
+        gold_price=SKIN_PRICE_RARE,
     ),
     ItemSpec(
         code="SKIN_NIGHT",
         name="Trang phục Dạ hành",
         kind=ItemKind.SKIN,
         rarity=ItemRarity.EPIC,
+        gold_price=SKIN_PRICE_EPIC,
+    ),
+    ItemSpec(
+        code="SKIN_ORATOR",
+        name="Trang phục Diễn giả",
+        kind=ItemKind.SKIN,
+        rarity=ItemRarity.EPIC,
+        gold_price=SKIN_PRICE_EPIC,
+    ),
+    ItemSpec(
+        code="SKIN_LAUREATE",
+        name="Trang phục Thủ khoa",
+        kind=ItemKind.SKIN,
+        rarity=ItemRarity.LEGENDARY,
+        gold_price=SKIN_PRICE_LEGENDARY,
     ),
     ItemSpec(
         code="CARD_STREAK",
@@ -516,6 +567,7 @@ def _item_row(spec: ItemSpec) -> dict[str, object]:
         "rarity": spec.rarity,
         "bonus_exp_permille": spec.bonus_exp_permille,
         "bonus_gold_permille": spec.bonus_gold_permille,
+        "gold_price": spec.gold_price,
         "is_active": True,
     }
 

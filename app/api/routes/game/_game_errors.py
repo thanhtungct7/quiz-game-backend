@@ -7,13 +7,20 @@ from app.core.exceptions import (
     GameClassNotFoundError,
     InvalidEquipmentError,
     InvalidLoadoutError,
+    ItemAlreadyOwnedError,
+    ItemNotForSaleError,
+    ItemNotFoundError,
     NotEnoughGoldError,
     SkillAlreadyOwnedError,
     SkillLockedError,
     SkillNotFoundError,
 )
 
-_NOT_FOUND_ERRORS = (GameClassNotFoundError, SkillNotFoundError)
+_NOT_FOUND_ERRORS = (
+    GameClassNotFoundError,
+    SkillNotFoundError,
+    ItemNotFoundError,
+)
 # Conditions the caller could fix by choosing differently, all 400.
 _BAD_REQUEST_ERRORS = (
     SkillLockedError,
@@ -21,6 +28,12 @@ _BAD_REQUEST_ERRORS = (
     InvalidLoadoutError,
     InvalidEquipmentError,
     BenchmarkExamNotEligibleError,
+    ItemNotForSaleError,
+)
+# Already have it, so the request is not wrong -- it is simply too late.
+_CONFLICT_ERRORS = (
+    SkillAlreadyOwnedError,
+    ItemAlreadyOwnedError,
 )
 
 
@@ -31,10 +44,10 @@ def raise_game_http_error(exc: Exception) -> NoReturn:
             status_code=status.HTTP_404_NOT_FOUND,
             detail=str(exc) or "Resource not found",
         ) from exc
-    if isinstance(exc, SkillAlreadyOwnedError):
+    if isinstance(exc, _CONFLICT_ERRORS):
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
-            detail=str(exc) or "You already own this skill",
+            detail=str(exc) or "You already own that",
         ) from exc
     if isinstance(exc, _BAD_REQUEST_ERRORS):
         raise HTTPException(
