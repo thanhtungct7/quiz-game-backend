@@ -146,6 +146,20 @@ python -m scripts.import_quiz_bank --reset \
   [--max-units-per-band 12] [--seed 20260831]
 ```
 
+The source files carry some broken text: a word's last letter split off by a
+space ("hav e", "readin g") in the multiple-choice and reading files, and a space
+before the full stop of every assembled `solved_sentence`. The import repairs
+both through `scripts/quiz_text_cleanup.py`, which also holds a short table of
+hand fixes for faults no rule can find.
+
+A database imported before that repair is fixed in place, without `--reset`
+(which would delete every learner's progress along with the course):
+
+```bash
+python -m scripts.fix_quiz_text          # dry run: what would change
+python -m scripts.fix_quiz_text --apply
+```
+
 `GET /courses/{id}/tree` returns course, units and path lessons in one response
 (~135 KB for 60 units / 1200 lessons) with an `ETag` computed from the payload.
 Clients should cache it and send `If-None-Match`; an unchanged course answers

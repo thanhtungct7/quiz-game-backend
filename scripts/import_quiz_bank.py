@@ -53,6 +53,7 @@ from app.models.content.lesson import Lesson
 from app.models.content.passage import Passage
 from app.models.content.topic import Topic
 from app.models.content.unit import Unit
+from scripts.quiz_text_cleanup import as_is, clean_sentence, clean_text
 
 DATA_DIR = Path(__file__).resolve().parent.parent / "data" / "quiz"
 COURSE_TITLE = "Ngân hàng câu hỏi"
@@ -223,23 +224,34 @@ def _source_metadata(row: dict[str, Any]) -> dict[str, Any]:
 
 def transform_multiple_choice_4options(
     rows: list[dict[str, Any]],
+    *,
+    clean: bool = True,
 ) -> Iterator[tuple[dict[str, Any], list[dict[str, Any]]]]:
+    """`clean=False` yields the text exactly as the source has it -- only
+    scripts/fix_quiz_text.py wants that, to recognise what an earlier import
+    wrote."""
+    text = clean_text if clean else as_is
+    sentence = clean_sentence if clean else as_is
     for row in rows:
+        source_ref = f"mc4:{row['id']}"
         options_map: dict[str, str] = row["options_map"]
         correct_key = row["correct_answer"]
         options = [
-            {"text": text, "correct": key == correct_key} for key, text in options_map.items()
+            {"text": text(source_ref, option), "correct": key == correct_key}
+            for key, option in options_map.items()
         ]
         explanation = (
-            f"Câu hoàn chỉnh: {row['solved_sentence']}" if row.get("solved_sentence") else None
+            f"Câu hoàn chỉnh: {sentence(source_ref, row['solved_sentence'])}"
+            if row.get("solved_sentence")
+            else None
         )
         yield (
             {
                 "type": ChallengeType.SELECT,
-                "question": row["question"],
+                "question": text(source_ref, row["question"]),
                 "explanation": explanation,
                 "difficulty": DIFFICULTY_MAP[row["difficulty"]],
-                "source_ref": f"mc4:{row['id']}",
+                "source_ref": source_ref,
                 **_source_metadata(row),
             },
             options,
@@ -248,34 +260,40 @@ def transform_multiple_choice_4options(
 
 def transform_reading_comprehension(
     rows: list[dict[str, Any]],
+    *,
+    clean: bool = True,
 ) -> Iterator[tuple[dict[str, Any], list[dict[str, Any]], dict[str, Any]]]:
+    """`clean` as for transform_multiple_choice_4options."""
+    text = clean_text if clean else as_is
     # One dict per article, shared by its 3-4 questions: the raw JSON repeats
     # the whole article on every row, and holding 97k copies of it while the
     # path is being planned is the one thing that would blow this script's
     # memory up.
     passages: dict[str, dict[str, Any]] = {}
     for row in rows:
+        source_ref = f"reading:{row['id']}"
         options_map: dict[str, str] = row["options_map"]
         correct_key = row["correct_answer"]
         options = [
-            {"text": text, "correct": key == correct_key} for key, text in options_map.items()
+            {"text": text(source_ref, option), "correct": key == correct_key}
+            for key, option in options_map.items()
         ]
-        source_ref = row["example_id"]
-        passage_info = passages.get(source_ref)
+        passage_ref = row["example_id"]
+        passage_info = passages.get(passage_ref)
         if passage_info is None:
             passage_info = {
-                "source_ref": source_ref,
-                "content": row["article"],
+                "source_ref": passage_ref,
+                "content": text(passage_ref, row["article"]),
                 "level_grade": row["level_grade"],
             }
-            passages[source_ref] = passage_info
+            passages[passage_ref] = passage_info
         yield (
             {
                 "type": ChallengeType.SELECT,
-                "question": row["question"],
+                "question": text(source_ref, row["question"]),
                 "explanation": None,
                 "difficulty": DIFFICULTY_MAP[row["difficulty"]],
-                "source_ref": f"reading:{row['id']}",
+                "source_ref": source_ref,
                 **_source_metadata(row),
             },
             options,
@@ -680,6 +698,17 @@ def _plan_band(band: Band, pools: dict[str, KindPool], layout: PathLayout) -> Ba
 # ---------------------------------------------------------------------------
 
 
+def correct_text_of(option_dicts: list[dict[str, Any]]) -> str | None:
+    """The source's "correct_text", rebuilt from the options.
+
+    SELECT has exactly one correct option; ORDER (sentence builder) marks every
+    option correct and holds them in answer order, so joining them gives the
+    assembled correct sentence -- either way no transform has to supply it.
+    """
+    correct_texts = [option["text"] for option in option_dicts if option["correct"]]
+    return " ".join(correct_texts) if correct_texts else None
+
+
 @dataclass
 class Batch:
     challenges: list[dict[str, Any]] = None  # type: ignore[assignment]
@@ -691,13 +720,7 @@ class Batch:
 
     def add(self, challenge_row: dict[str, Any], option_dicts: list[dict[str, Any]]) -> None:
         challenge_id = challenge_row["id"]
-        # SELECT has exactly one correct option; ORDER (sentence builder)
-        # marks every option correct and holds them in answer order, so
-        # joining them gives the assembled correct sentence -- either way this
-        # reproduces the source "correct_text" field without needing each
-        # transform to supply it.
-        correct_texts = [option["text"] for option in option_dicts if option["correct"]]
-        challenge_row["correct_text"] = " ".join(correct_texts) if correct_texts else None
+        challenge_row["correct_text"] = correct_text_of(option_dicts)
         self.challenges.append(challenge_row)
         for index, option in enumerate(option_dicts, start=1):
             self.options.append(
