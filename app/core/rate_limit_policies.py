@@ -28,6 +28,8 @@ RESET_PASSWORD_PER_IP = RateLimit(limit=10, window_seconds=15 * MINUTE)
 # --- account -------------------------------------------------------------------------
 # Every upload is a round trip to Google Drive.
 AVATAR_UPLOAD_PER_USER = RateLimit(limit=10, window_seconds=HOUR)
+# Sent on every app start and every token rotation; generous, but not a firehose.
+DEVICE_REGISTRATION_PER_USER = RateLimit(limit=30, window_seconds=HOUR)
 
 # --- study and exams -------------------------------------------------------------------
 CHECK_ANSWER_PER_USER = RateLimit(limit=60, window_seconds=MINUTE)

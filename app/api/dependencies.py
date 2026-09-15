@@ -31,6 +31,10 @@ from app.repository.game.item_repository import ItemRepository
 from app.repository.game.monster_repository import MonsterRepository
 from app.repository.game.season_repository import SeasonRepository
 from app.repository.game.user_skill_repository import UserSkillRepository
+from app.repository.notification.device_token_repository import DeviceTokenRepository
+from app.repository.notification.notification_dispatch_repository import (
+    NotificationDispatchRepository,
+)
 from app.repository.profile.profile_stats_repository import ProfileStatsRepository
 from app.repository.progress.user_progress_repository import UserProgressRepository
 from app.repository.pve.lesson_battle_repository import LessonBattleRepository
@@ -50,6 +54,8 @@ from app.services.game.achievement_service import AchievementService
 from app.services.game.benchmark_exam_service import BenchmarkExamService
 from app.services.game.game_service import GameService
 from app.services.game.lesson_rewards import LessonRewardService
+from app.services.notification.notification_service import NotificationService
+from app.services.notification.push_sender import get_push_sender
 from app.services.profile.profile_service import ProfileService
 from app.services.progress.progress_service import ProgressService
 from app.services.pve.battle_service import BattleService
@@ -276,6 +282,14 @@ def get_benchmark_exam_service(db: DatabaseSession) -> BenchmarkExamService:
     )
 
 
+def get_notification_service(db: DatabaseSession) -> NotificationService:
+    return NotificationService(
+        tokens=DeviceTokenRepository(db),
+        dispatches=NotificationDispatchRepository(db),
+        sender=get_push_sender(),
+    )
+
+
 AdminUser = Annotated[User, Depends(get_current_admin_user)]
 AuthServiceDependency = Annotated[AuthService, Depends(get_auth_service)]
 PasswordResetServiceDependency = Annotated[
@@ -294,3 +308,6 @@ BenchmarkExamServiceDependency = Annotated[
 UserServiceDependency = Annotated[UserService, Depends(get_user_service)]
 BattleServiceDependency = Annotated[BattleService, Depends(get_battle_service)]
 ProfileServiceDependency = Annotated[ProfileService, Depends(get_profile_service)]
+NotificationServiceDependency = Annotated[
+    NotificationService, Depends(get_notification_service)
+]

@@ -9,11 +9,16 @@ import asyncio
 import logging
 from datetime import UTC, datetime
 
+from app.core.config import settings
 from app.db.session import AsyncSessionFactory
 from app.models.duo.duo_match import DuoMatchStatus
 from app.repository.duo.duo_match_repository import DuoMatchRepository
 from app.repository.game.game_profile_repository import GameProfileRepository
 from app.repository.game.season_repository import SeasonRepository
+from app.repository.notification.device_token_repository import DeviceTokenRepository
+from app.repository.notification.notification_dispatch_repository import (
+    NotificationDispatchRepository,
+)
 from app.schemas.duo.events import ServerEvent, envelope
 from app.services.duo.match_runtime import (
     QUEUE_TIMEOUT_SECONDS,
@@ -23,6 +28,8 @@ from app.services.duo.match_runtime import (
 from app.services.duo.match_runtime import engine as default_engine
 from app.services.game.energy_service import EnergyService
 from app.services.game.season_service import roll_over_if_due
+from app.services.notification.notification_service import NotificationService
+from app.services.notification.push_sender import get_push_sender
 from app.services.pve.housekeeping import sweep_battles
 
 logger = logging.getLogger(__name__)
@@ -60,6 +67,25 @@ async def roll_seasons() -> str | None:
         return season.code if season is not None else None
 
 
+async def send_scheduled_pushes() -> tuple[int, int]:
+    """One batch each of streak reminders and the new-season announcement.
+
+    Ridden on the same minute as everything else here. Safe to run every
+    sweep: `NotificationService` claims each recipient before sending, so a
+    reminder is never sent twice. Returns (reminded, announced).
+    """
+    now = datetime.now(UTC)
+    async with AsyncSessionFactory() as db:
+        service = NotificationService(
+            tokens=DeviceTokenRepository(db),
+            dispatches=NotificationDispatchRepository(db),
+            sender=get_push_sender(),
+        )
+        reminded = await service.send_streak_reminders(now, settings.streak_reminder_hour)
+        announced = await service.announce_season(await SeasonRepository(db).active(), now)
+        return reminded, announced
+
+
 async def sweep(engine: DuoEngine | None = None) -> None:
     """One cleanup pass: time out stale queue entries, then close any
     waiting room nobody has joined for too long."""
@@ -93,6 +119,13 @@ async def sweep(engine: DuoEngine | None = None) -> None:
     opened = await roll_seasons()
     if opened is not None:
         logger.info("Opened ladder season %s", opened)
+
+    # Last, so a Firebase outage can never hold up the cleanup above.
+    reminded, announced = await send_scheduled_pushes()
+    if reminded or announced:
+        logger.info(
+            "Pushed %d streak reminder(s) and %d season announcement(s)", reminded, announced
+        )
 
 
 async def run_housekeeping(interval_seconds: float = SWEEP_INTERVAL_SECONDS) -> None:

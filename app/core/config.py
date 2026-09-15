@@ -1,4 +1,5 @@
 from functools import lru_cache
+from pathlib import Path
 from typing import Literal
 
 from pydantic import AnyUrl, EmailStr, Field, SecretStr, field_validator, model_validator
@@ -67,6 +68,13 @@ class Settings(BaseSettings):
     first_admin_password: SecretStr | None = Field(default=None, min_length=8, max_length=128)
     first_admin_username: str | None = Field(default=None, min_length=1, max_length=50)
 
+    # Push notifications. A Firebase service account key, kept outside the repo. Left
+    # empty, scheduled pushes are logged instead of sent.
+    firebase_credentials_file: str | None = None
+    # The local hour (Vietnam time, see app/services/game/streak.py) from which learners
+    # who have not studied today are reminded.
+    streak_reminder_hour: int = Field(default=20, ge=0, le=23)
+
     model_config = SettingsConfigDict(
         env_file=".env",
         env_file_encoding="utf-8",
@@ -81,6 +89,7 @@ class Settings(BaseSettings):
         "google_drive_client_id",
         "google_drive_client_secret",
         "google_drive_refresh_token",
+        "firebase_credentials_file",
         mode="before",
     )
     @classmethod
@@ -127,6 +136,12 @@ class Settings(BaseSettings):
             parse_networks(self.trusted_proxies)
         except ValueError as exc:
             raise ValueError(f"TRUSTED_PROXIES must be IPs or CIDRs: {exc}") from exc
+        if self.firebase_credentials_file is not None and not Path(
+            self.firebase_credentials_file
+        ).is_file():
+            raise ValueError(
+                f"FIREBASE_CREDENTIALS_FILE does not exist: {self.firebase_credentials_file}"
+            )
         if "*" in self.cors_origins:
             raise ValueError("Wildcard CORS origins are not allowed")
         if self.smtp_use_ssl and self.smtp_start_tls:

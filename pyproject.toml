@@ -21,6 +21,7 @@ dependencies = [
     "google-auth[requests]>=2.56,<3",
     "httpx>=0.28,<1",
     "python-multipart>=0.0.20,<0.1",
+    "firebase-admin>=7.5,<8",
 ]
 
 [project.optional-dependencies]
@@ -56,3 +57,8 @@ ignore = ["S101"]
 python_version = "3.12"
 strict = true
 plugins = ["pydantic.mypy"]
+
+# The Firebase Admin SDK ships no type information.
+[[tool.mypy.overrides]]
+module = ["firebase_admin", "firebase_admin.*"]
+ignore_missing_imports = true

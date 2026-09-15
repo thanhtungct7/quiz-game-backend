@@ -24,6 +24,8 @@ from app.models.game.user_daily_activity import UserDailyActivity
 from app.models.game.user_game_profile import UserGameProfile
 from app.models.game.user_item import LootGrant, UserEquipment, UserItem
 from app.models.game.user_skill import UserSkill, UserSkillLoadout
+from app.models.notification.notification_dispatch import NotificationDispatch
+from app.models.notification.user_device_token import UserDeviceToken
 from app.models.progress.user_challenge_progress import UserChallengeProgress
 from app.models.progress.user_lesson_progress import UserLessonProgress
 from app.models.pve.lesson_battle import LessonBattle
@@ -63,4 +65,6 @@ __all__ = [
     "Achievement",
     "UserAchievement",
     "BenchmarkExamAttempt",
+    "UserDeviceToken",
+    "NotificationDispatch",
 ]
