@@ -10,6 +10,7 @@ from scripts.quiz_text_cleanup import (
     clean_sentence,
     clean_text,
     rejoin_split_words,
+    tidy_end_mark,
     tidy_punctuation,
 )
 
@@ -59,6 +60,54 @@ def test_the_space_before_a_full_stop_goes_but_an_ellipsis_stays() -> None:
     assert tidy_punctuation("They money is hers .") == "They money is hers."
     assert tidy_punctuation("Yes , they did .") == "Yes, they did."
     assert tidy_punctuation("Wait ... then go.") == "Wait ... then go."
+
+
+@pytest.mark.parametrize(
+    ("broken", "fixed"),
+    [
+        ("What is the bad thing about the car?.", "What is the bad thing about the car?"),
+        ("How many times did Bob go to the market?.", "How many times did Bob go to the market?"),
+        ("Go away!.", "Go away!"),
+        ("Who is it ?. ", "Who is it ?"),
+    ],
+)
+def test_a_full_stop_after_the_closing_question_mark_goes(broken: str, fixed: str) -> None:
+    assert tidy_end_mark(broken) == fixed
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        # The blank convention, which ends in " ." and must keep its shape.
+        "You are a very professional ... .",
+        # Mid-sentence, so not the extractor's doubled ending.
+        "Is it? No, it isn't.",
+        "He asked: Why?. Then he left.",
+        "A plain sentence.",
+    ],
+)
+def test_text_without_a_doubled_ending_is_left_alone(text: str) -> None:
+    assert tidy_end_mark(text) == text
+
+
+def test_the_malformed_path_questions_are_repaired() -> None:
+    """The four reading questions that reached a learn-path lesson unreadable."""
+    assert (
+        clean_text("reading:18331", "What is the bad thing about the car?.")
+        == "What is the bad thing about the car?"
+    )
+    assert (
+        clean_text("reading:18622", "Whom  is the old man living with ?.")
+        == "Whom is the old man living with?"
+    )
+    assert (
+        clean_text("reading:6054", "---What does Nick buy for Mary?  ---  _")
+        == "What does Nick buy for Mary?"
+    )
+    assert clean_text(
+        "reading:27473",
+        "Ding Junhui's father usually played snooker  ---When Ding Junhui was young.",
+    ) == "Ding Junhui's father usually played snooker  _  when Ding Junhui was young."
 
 
 def test_manual_fixes_come_before_the_automatic_pass() -> None:

@@ -41,6 +41,12 @@ _NEVER_JOIN = frozenset(
 # Only before a mark that ends a clause, so an ellipsis (" ...") is left alone.
 _SPACE_BEFORE_PUNCTUATION = re.compile(r"\s+([.,!?;:])(?=\s|$)")
 
+# "What is the bad thing about the car?." -- the extractor appended the
+# sentence's full stop to a mark that had already ended it. Anchored at the end
+# of the text: every one of these in the corpus is final, and anchoring is what
+# keeps a blank written "... ." and a mid-sentence "?" out of reach.
+_DOUBLED_END_MARK = re.compile(r"([?!])\.\s*$")
+
 # Faults no rule can find, keyed by the challenge's source_ref. Applied before
 # the automatic pass.
 MANUAL_FIXES: dict[str, tuple[tuple[str, str], ...]] = {
@@ -49,6 +55,17 @@ MANUAL_FIXES: dict[str, tuple[tuple[str, str], ...]] = {
     # Its distractors are "have" and "hav e": rejoined, the question would offer
     # the same option twice.
     "mc4:1535": (("hav e", "do"),),
+    # Questions carrying a separator the extraction left behind. "---" is not
+    # swept up by a rule: elsewhere in this corpus it is a real separator, in
+    # an option ("wet hay ---- becomes dry ---- gives off heat") and in a
+    # headline ("My father---my first and lifelong English teacher").
+    "reading:6054": (("---What does Nick buy for Mary?  ---  _", "What does Nick buy for Mary?"),),
+    "reading:27473": (
+        ("snooker  ---When Ding Junhui was young.", "snooker  _  when Ding Junhui was young."),
+    ),
+    "reading:18622": (
+        ("Whom  is the old man living with ?.", "Whom is the old man living with?"),
+    ),
 }
 
 
@@ -75,6 +92,11 @@ def rejoin_split_words(text: str) -> str:
     return _SPLIT_LAST_LETTER.sub(join, text)
 
 
+def tidy_end_mark(text: str) -> str:
+    """Drop a full stop that follows the "?" or "!" already ending the text."""
+    return _DOUBLED_END_MARK.sub(r"\1", text)
+
+
 def tidy_punctuation(text: str) -> str:
     """Drop the space before a clause-ending mark: "is hers ." -> "is hers.".
 
@@ -96,7 +118,7 @@ def clean_text(source_ref: str, text: str) -> str:
     Manual fixes go first: one of them rewrites a split word that the automatic
     pass would otherwise have joined.
     """
-    return rejoin_split_words(apply_manual_fixes(source_ref, text))
+    return tidy_end_mark(rejoin_split_words(apply_manual_fixes(source_ref, text)))
 
 
 def clean_sentence(source_ref: str, text: str) -> str:
