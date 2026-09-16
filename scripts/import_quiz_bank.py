@@ -53,6 +53,7 @@ from app.models.content.lesson import Lesson
 from app.models.content.passage import Passage
 from app.models.content.topic import Topic
 from app.models.content.unit import Unit
+from scripts.quiz_option_repairs import DROPPED_QUESTIONS, apply_answer_key, repair_options
 from scripts.quiz_text_cleanup import as_is, clean_sentence, clean_text
 
 DATA_DIR = Path(__file__).resolve().parent.parent / "data" / "quiz"
@@ -234,12 +235,20 @@ def transform_multiple_choice_4options(
     sentence = clean_sentence if clean else as_is
     for row in rows:
         source_ref = f"mc4:{row['id']}"
+        # Dropped whether or not the text is cleaned: which questions exist is
+        # not a matter of text, and scripts/fix_quiz_text.py pairs the two
+        # passes row for row.
+        if source_ref in DROPPED_QUESTIONS:
+            continue
         options_map: dict[str, str] = row["options_map"]
         correct_key = row["correct_answer"]
         options = [
             {"text": text(source_ref, option), "correct": key == correct_key}
             for key, option in options_map.items()
         ]
+        if clean:
+            repair_options(source_ref, options)
+            apply_answer_key(source_ref, options)
         explanation = (
             f"Câu hoàn chỉnh: {sentence(source_ref, row['solved_sentence'])}"
             if row.get("solved_sentence")
@@ -272,12 +281,16 @@ def transform_reading_comprehension(
     passages: dict[str, dict[str, Any]] = {}
     for row in rows:
         source_ref = f"reading:{row['id']}"
+        if source_ref in DROPPED_QUESTIONS:
+            continue
         options_map: dict[str, str] = row["options_map"]
         correct_key = row["correct_answer"]
         options = [
             {"text": text(source_ref, option), "correct": key == correct_key}
             for key, option in options_map.items()
         ]
+        if clean:
+            repair_options(source_ref, options)
         passage_ref = row["example_id"]
         passage_info = passages.get(passage_ref)
         if passage_info is None:
@@ -368,18 +381,22 @@ def transform_explanations_mcq(
     rows: list[dict[str, Any]],
 ) -> Iterator[tuple[dict[str, Any], list[dict[str, Any]]]]:
     for row in rows:
+        source_ref = f"explanations.mcq:{row['id']}"
+        if source_ref in DROPPED_QUESTIONS:
+            continue
         options_map: dict[str, str] = row["options_map"]
         correct_key = row["correct_answer"]
         options = [
             {"text": text, "correct": key == correct_key} for key, text in options_map.items()
         ]
+        apply_answer_key(source_ref, options)
         yield (
             {
                 "type": ChallengeType.SELECT,
                 "question": row["question"],
                 "explanation": row.get("explanation"),
                 "difficulty": DIFFICULTY_MAP[row["difficulty"]],
-                "source_ref": f"explanations.mcq:{row['id']}",
+                "source_ref": source_ref,
                 **_source_metadata(row),
             },
             options,
@@ -522,10 +539,17 @@ def _collect_pools(skipped_ids: list[int], unbanded: list[tuple[str, SourceItem]
     240 MB of JSON, and holding all five parts at once is the peak this avoids.
     """
     pools: BandPools = {band.key: {} for band in BANDS}
+    # Questions no answer can be graded against. scripts/quiz_option_repairs.py
+    # names the ones this corpus has; this is the net under it, so a future
+    # source file cannot quietly add another.
+    unanswerable: list[str] = []
 
     def add(kind: str, items: Iterator[SourceItem]) -> None:
         for item in items:
             fields = item[0]
+            if not any(option["correct"] for option in item[1]):
+                unanswerable.append(fields["source_ref"])
+                continue
             band = BAND_INDEX.get((kind, fields["toeic_band"] or ""))
             if band is None:
                 unbanded.append((kind, item))
@@ -573,6 +597,12 @@ def _collect_pools(skipped_ids: list[int], unbanded: list[tuple[str, SourceItem]
         ),
     )
     del explanations
+
+    if unanswerable:
+        print(
+            f"  {len(unanswerable)} question(s) skipped with no correct option: "
+            f"{', '.join(unanswerable[:5])}"
+        )
 
     return pools
 

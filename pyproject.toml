@@ -44,6 +44,9 @@ pythonpath = ["."]
 testpaths = ["tests"]
 addopts = "-q"
 asyncio_mode = "auto"
+markers = [
+    "slow: reads the 240 MB reading corpus; deselect with -m 'not slow'",
+]
 
 [tool.ruff]
 target-version = "py312"
