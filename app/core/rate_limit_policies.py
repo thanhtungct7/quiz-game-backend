@@ -44,6 +44,14 @@ GAME_WRITE_PER_USER = RateLimit(limit=30, window_seconds=MINUTE)
 # Room codes are short; this is what keeps them from being enumerated.
 ROOM_PREVIEW_PER_USER = RateLimit(limit=20, window_seconds=MINUTE)
 
+# --- AI conversation: every hit below is a paid call to the model ----------------------------
+# The daily cap on conversations is counted in the database, not here -- see
+# `conversation_sessions_per_day` -- because this limiter forgets on restart.
+CONVERSATION_START_PER_USER = RateLimit(limit=10, window_seconds=MINUTE)
+CONVERSATION_MESSAGE_PER_USER = RateLimit(limit=20, window_seconds=MINUTE)
+# Hints and translations.
+CONVERSATION_EXTRA_PER_USER = RateLimit(limit=30, window_seconds=HOUR)
+
 # --- WebSockets ---------------------------------------------------------------------------
 WS_CONNECT_PER_USER = RateLimit(limit=20, window_seconds=MINUTE)
 WS_MESSAGES_PER_SECOND = 20.0

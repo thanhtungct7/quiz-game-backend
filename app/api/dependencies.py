@@ -19,6 +19,7 @@ from app.repository.content.course_repository import CourseRepository
 from app.repository.content.lesson_repository import LessonRepository
 from app.repository.content.topic_repository import TopicRepository
 from app.repository.content.unit_repository import UnitRepository
+from app.repository.conversation.conversation_repository import ConversationRepository
 from app.repository.duo.duo_match_repository import DuoMatchRepository
 from app.repository.duo.duo_rating_repository import DuoRatingRepository
 from app.repository.game.achievement_repository import AchievementRepository
@@ -38,6 +39,7 @@ from app.repository.notification.notification_dispatch_repository import (
 from app.repository.profile.profile_stats_repository import ProfileStatsRepository
 from app.repository.progress.user_progress_repository import UserProgressRepository
 from app.repository.pve.lesson_battle_repository import LessonBattleRepository
+from app.services.ai.llm_client import get_llm_client
 from app.services.auth.auth_service import AuthService
 from app.services.auth.avatar_storage import (
     AvatarStorage,
@@ -49,6 +51,7 @@ from app.services.auth.password_reset_service import PasswordResetService
 from app.services.auth.user_service import UserService
 from app.services.content.course_content_service import CourseContentService
 from app.services.content.quiz_service import QuizService
+from app.services.conversation.conversation_service import ConversationService
 from app.services.duo.duo_service import DuoService
 from app.services.game.achievement_service import AchievementService
 from app.services.game.benchmark_exam_service import BenchmarkExamService
@@ -282,6 +285,15 @@ def get_benchmark_exam_service(db: DatabaseSession) -> BenchmarkExamService:
     )
 
 
+def get_conversation_service(db: DatabaseSession) -> ConversationService:
+    return ConversationService(
+        conversations=ConversationRepository(db),
+        profiles=GameProfileRepository(db),
+        llm=get_llm_client(),
+        config=settings,
+    )
+
+
 def get_notification_service(db: DatabaseSession) -> NotificationService:
     return NotificationService(
         tokens=DeviceTokenRepository(db),
@@ -310,4 +322,7 @@ BattleServiceDependency = Annotated[BattleService, Depends(get_battle_service)]
 ProfileServiceDependency = Annotated[ProfileService, Depends(get_profile_service)]
 NotificationServiceDependency = Annotated[
     NotificationService, Depends(get_notification_service)
+]
+ConversationServiceDependency = Annotated[
+    ConversationService, Depends(get_conversation_service)
 ]

@@ -197,3 +197,33 @@ class BenchmarkExamNotEnoughQuestionsError(ApplicationError):
 class ChallengeLockedByExamError(ApplicationError):
     """Raised when a challenge is checked while it sits on the caller's open
     Benchmark Exam paper -- checking it would reveal the answer."""
+
+
+class AiUnavailableError(ApplicationError):
+    """Raised when the AI provider is not configured, or failed after its retry."""
+
+
+class ScenarioNotFoundError(ApplicationError):
+    """Raised when a conversation is started for a scenario code that does not exist."""
+
+
+class ConversationNotFoundError(ApplicationError):
+    """Raised when a conversation, or a message in it, does not exist or belongs
+    to another user."""
+
+
+class ConversationClosedError(ApplicationError):
+    """Raised when a conversation that is finished, or out of turns, is written to."""
+
+
+class ConversationAwaitingReplyError(ApplicationError):
+    """Raised when a new message is sent while the last one still has no reply --
+    the client must retry that one first."""
+
+
+class ConversationTooShortError(ApplicationError):
+    """Raised when feedback is asked for before the learner has said anything."""
+
+
+class DailyConversationLimitError(ApplicationError):
+    """Raised when a learner starts more conversations in a day than allowed."""

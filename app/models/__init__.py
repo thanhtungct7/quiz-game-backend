@@ -8,6 +8,8 @@ from app.models.content.lesson import Lesson
 from app.models.content.passage import Passage
 from app.models.content.topic import Topic
 from app.models.content.unit import Unit
+from app.models.conversation.conversation_message import ConversationMessage
+from app.models.conversation.conversation_session import ConversationSession
 from app.models.duo.duo_match import DuoMatch
 from app.models.duo.duo_match_round import DuoMatchRound
 from app.models.duo.duo_rating import DuoRating
@@ -67,4 +69,6 @@ __all__ = [
     "BenchmarkExamAttempt",
     "UserDeviceToken",
     "NotificationDispatch",
+    "ConversationSession",
+    "ConversationMessage",
 ]

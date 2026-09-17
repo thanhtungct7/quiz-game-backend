@@ -75,6 +75,17 @@ class Settings(BaseSettings):
     # who have not studied today are reminded.
     streak_reminder_hour: int = Field(default=20, ge=0, le=23)
 
+    # AI conversation practice (DeepSeek). Left empty, the conversation routes answer 503
+    # and nothing else in the app notices.
+    deepseek_api_key: SecretStr | None = None
+    deepseek_base_url: str = "https://api.deepseek.com"
+    # Every learner turn is one call and the end-of-session feedback one more; both
+    # run with thinking off (see app/services/ai/llm_client.py).
+    deepseek_chat_model: str = "deepseek-flash"
+    deepseek_feedback_model: str = "deepseek-flash"
+    deepseek_timeout_seconds: float = Field(default=30, gt=0, le=120)
+    conversation_sessions_per_day: int = Field(default=10, ge=1, le=100)
+
     model_config = SettingsConfigDict(
         env_file=".env",
         env_file_encoding="utf-8",
@@ -90,6 +101,7 @@ class Settings(BaseSettings):
         "google_drive_client_secret",
         "google_drive_refresh_token",
         "firebase_credentials_file",
+        "deepseek_api_key",
         mode="before",
     )
     @classmethod
@@ -136,9 +148,10 @@ class Settings(BaseSettings):
             parse_networks(self.trusted_proxies)
         except ValueError as exc:
             raise ValueError(f"TRUSTED_PROXIES must be IPs or CIDRs: {exc}") from exc
-        if self.firebase_credentials_file is not None and not Path(
-            self.firebase_credentials_file
-        ).is_file():
+        if (
+            self.firebase_credentials_file is not None
+            and not Path(self.firebase_credentials_file).is_file()
+        ):
             raise ValueError(
                 f"FIREBASE_CREDENTIALS_FILE does not exist: {self.firebase_credentials_file}"
             )

@@ -10,6 +10,7 @@ from app.api.routes.content import (
     topics,
     units,
 )
+from app.api.routes.conversation import conversation
 from app.api.routes.duo import duo, duo_ws
 from app.api.routes.game import benchmark_exam, game
 from app.api.routes.notification import notifications
@@ -36,6 +37,9 @@ api_router.include_router(
 )
 api_router.include_router(battle.router, prefix="/battles", tags=["pve"])
 api_router.include_router(battle_ws.router, prefix="/battles", tags=["pve"])
+api_router.include_router(
+    conversation.router, prefix="/conversations", tags=["conversation"]
+)
 api_router.include_router(
     notifications.router, prefix="/notifications", tags=["notifications"]
 )
