@@ -152,10 +152,6 @@ class InvalidEquipmentError(ApplicationError):
     """Raised when a requested equipment set is not one the user can wear."""
 
 
-class SeasonNotFoundError(ApplicationError):
-    """Raised when there is no active season."""
-
-
 class MonsterUnavailableError(ApplicationError):
     """Raised when no monster in the catalog can guard a lesson."""
 

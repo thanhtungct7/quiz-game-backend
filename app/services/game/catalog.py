@@ -388,10 +388,6 @@ async def seed_game_catalog(catalog: CatalogRepository) -> None:
         await catalog.upsert_skill(ultimate.code, _skill_row(ultimate, unit_id))
 
 
-def resolve_class(code: str | None) -> ClassSpec | None:
-    return next((spec for spec in CLASSES if spec.code == code), None)
-
-
 @dataclass(frozen=True)
 class ItemSpec:
     code: str
