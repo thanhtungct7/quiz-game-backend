@@ -32,6 +32,10 @@ class GameProfileRead(BaseModel):
     gold: int
     class_code: str | None
     class_name: str | None
+    # The costume worn into a fight. Published here as well as on the inventory
+    # so a screen that already has the profile -- the arena, for one -- does not
+    # have to fetch a whole inventory to know which sprite page to draw.
+    skin_code: str | None
     energy: EnergyRead
     day_streak: int
     best_day_streak: int
@@ -42,10 +46,20 @@ class GameProfileRead(BaseModel):
 
 
 class GameClassRead(BaseModel):
+    """One class in the picker.
+
+    `atk` and `damage_permille` are the same fact twice: the multiplier is exact
+    and comparable, the attack figure is the one a player can hold against
+    `max_hp` next to it. Both are published for the same reason the profile card
+    publishes both -- `combat_stats.attack_for` is the only place the conversion
+    happens, so the picker and the card can never drift apart.
+    """
+
     code: str
     name: str
     description: str
     max_hp: int
+    atk: int
     damage_permille: int
     starting_mana: int
     defence: int

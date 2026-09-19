@@ -30,8 +30,10 @@ ENRAGE_MULTIPLIER_PERMILLE = 1400
 WARRIOR = "WARRIOR"
 MAGE = "MAGE"
 # The code stays ASSASSIN -- every foreign key, seeded row and existing
-# player's `class_code` names it -- but the school is "Học giả" now, the
+# player's `class_code` names it -- but the school is "Xạ thủ" now, the
 # third of the three learning schools alongside Chiến binh and Pháp sư.
+# It has been renamed twice without the code moving, which is the point of
+# keeping a stable code and a display name that is free to change.
 ASSASSIN = "ASSASSIN"
 
 
@@ -83,8 +85,8 @@ CLASSES = (
     ),
     ClassSpec(
         code=ASSASSIN,
-        name="Học giả",
-        description="Tốc độ. Chuyên các Khiên combo -- giữ chuỗi trả lời nhanh không đứt.",
+        name="Xạ thủ",
+        description="Tốc độ. Chuyên các Khiên combo -- bắn liên hoàn, chuỗi trả lời không đứt.",
         max_hp=100,
         damage_permille=1050,
         starting_mana=20,
@@ -237,7 +239,7 @@ SKILLS = (
         gold_price=600,
         sort_order=22,
     ),
-    # Học giả (Tốc độ): giữ nhịp trả lời nhanh không đứt chuỗi, mạnh dần theo
+    # Xạ thủ (Tốc độ): giữ nhịp trả lời nhanh không đứt chuỗi, mạnh dần theo
     # số lần trả lời sai liên tiếp mà một Khiên combo còn tha thứ được.
     SkillSpec(
         code="ASSA_FOCUS",
@@ -498,6 +500,126 @@ ITEMS = (
         bonus_exp_permille=25,
         bonus_gold_permille=25,
     ),
+    # Một nhánh vũ khí cho mỗi trường phái, để cái rơi ra từ rương còn hợp với
+    # nhân vật đang cầm nó: kiếm cho Chiến binh (ở trên), gậy phép cho Pháp sư,
+    # cung và rìu cho Xạ thủ. Chỉ số vẫn y hệt nhau theo bậc hiếm -- trường
+    # phái không được là thứ quyết định ai nhặt được đồ tốt hơn.
+    ItemSpec(
+        code="OAK_STAFF",
+        name="Gậy sồi",
+        kind=ItemKind.EQUIPMENT,
+        rarity=ItemRarity.COMMON,
+        slot=EquipmentSlot.WEAPON,
+        bonus_gold_permille=20,
+    ),
+    ItemSpec(
+        code="MAGIC_WAND",
+        name="Đũa phép",
+        kind=ItemKind.EQUIPMENT,
+        rarity=ItemRarity.RARE,
+        slot=EquipmentSlot.WEAPON,
+        bonus_gold_permille=45,
+    ),
+    ItemSpec(
+        code="EMERALD_STAFF",
+        name="Gậy lục bảo",
+        kind=ItemKind.EQUIPMENT,
+        rarity=ItemRarity.RARE,
+        slot=EquipmentSlot.WEAPON,
+        bonus_gold_permille=45,
+    ),
+    ItemSpec(
+        code="RUBY_STAFF",
+        name="Gậy hồng ngọc",
+        kind=ItemKind.EQUIPMENT,
+        rarity=ItemRarity.EPIC,
+        slot=EquipmentSlot.WEAPON,
+        bonus_gold_permille=70,
+    ),
+    ItemSpec(
+        code="HUNTER_BOW",
+        name="Cung thợ săn",
+        kind=ItemKind.EQUIPMENT,
+        rarity=ItemRarity.COMMON,
+        slot=EquipmentSlot.WEAPON,
+        bonus_gold_permille=20,
+    ),
+    ItemSpec(
+        code="WAR_AXE",
+        name="Rìu chiến",
+        kind=ItemKind.EQUIPMENT,
+        rarity=ItemRarity.RARE,
+        slot=EquipmentSlot.WEAPON,
+        bonus_gold_permille=45,
+    ),
+    ItemSpec(
+        code="WOODEN_ARMOR",
+        name="Giáp gỗ",
+        kind=ItemKind.EQUIPMENT,
+        rarity=ItemRarity.COMMON,
+        slot=EquipmentSlot.ARMOR,
+        bonus_exp_permille=20,
+    ),
+    ItemSpec(
+        code="LEATHER_HOOD",
+        name="Mũ da",
+        kind=ItemKind.EQUIPMENT,
+        rarity=ItemRarity.COMMON,
+        slot=EquipmentSlot.ARMOR,
+        bonus_exp_permille=20,
+    ),
+    ItemSpec(
+        code="IRON_HELMET",
+        name="Mũ sắt",
+        kind=ItemKind.EQUIPMENT,
+        rarity=ItemRarity.RARE,
+        slot=EquipmentSlot.ARMOR,
+        bonus_exp_permille=45,
+    ),
+    ItemSpec(
+        code="WIZARD_HAT",
+        name="Mũ phù thủy",
+        kind=ItemKind.EQUIPMENT,
+        rarity=ItemRarity.RARE,
+        slot=EquipmentSlot.ARMOR,
+        bonus_exp_permille=45,
+    ),
+    ItemSpec(
+        code="SCHOLAR_LANTERN",
+        name="Đèn học giả",
+        kind=ItemKind.EQUIPMENT,
+        rarity=ItemRarity.COMMON,
+        slot=EquipmentSlot.TRINKET,
+        bonus_exp_permille=10,
+        bonus_gold_permille=10,
+    ),
+    ItemSpec(
+        code="CUT_RUBY",
+        name="Hồng ngọc mài",
+        kind=ItemKind.EQUIPMENT,
+        rarity=ItemRarity.RARE,
+        slot=EquipmentSlot.TRINKET,
+        bonus_exp_permille=15,
+        bonus_gold_permille=15,
+    ),
+    ItemSpec(
+        code="CUT_EMERALD",
+        name="Lục bảo mài",
+        kind=ItemKind.EQUIPMENT,
+        rarity=ItemRarity.RARE,
+        slot=EquipmentSlot.TRINKET,
+        bonus_exp_permille=15,
+        bonus_gold_permille=15,
+    ),
+    ItemSpec(
+        code="DIAMOND_CHARM",
+        name="Bùa kim cương",
+        kind=ItemKind.EQUIPMENT,
+        rarity=ItemRarity.LEGENDARY,
+        slot=EquipmentSlot.TRINKET,
+        bonus_exp_permille=35,
+        bonus_gold_permille=35,
+    ),
     ItemSpec(
         code="SKIN_ROOKIE",
         name="Trang phục Tân binh",
@@ -540,6 +662,52 @@ ITEMS = (
         rarity=ItemRarity.LEGENDARY,
         gold_price=SKIN_PRICE_LEGENDARY,
     ),
+    # Trang phục cho hai trường phái mới. Một bộ chỉ hợp với trường phái sinh ra
+    # nó, vì nó là chính sheet của trường phái đó đổi tông áo -- không có cách
+    # nào khoác áo choàng hiệp sĩ lên xạ thủ. Mặc nhầm bộ của trường phái khác
+    # thì nhân vật giữ nguyên hình chứ không biến thành người khác.
+    ItemSpec(
+        code="SKIN_MAGE_INK",
+        name="Trang phục Mực xanh",
+        kind=ItemKind.SKIN,
+        rarity=ItemRarity.COMMON,
+        gold_price=SKIN_PRICE_COMMON,
+    ),
+    ItemSpec(
+        code="SKIN_MAGE_EMBER",
+        name="Trang phục Đèn khuya",
+        kind=ItemKind.SKIN,
+        rarity=ItemRarity.RARE,
+        gold_price=SKIN_PRICE_RARE,
+    ),
+    ItemSpec(
+        code="SKIN_MAGE_JADE",
+        name="Trang phục Ngọc bích",
+        kind=ItemKind.SKIN,
+        rarity=ItemRarity.EPIC,
+        gold_price=SKIN_PRICE_EPIC,
+    ),
+    ItemSpec(
+        code="SKIN_ARCHER_DUSK",
+        name="Trang phục Đỏ thắm",
+        kind=ItemKind.SKIN,
+        rarity=ItemRarity.COMMON,
+        gold_price=SKIN_PRICE_COMMON,
+    ),
+    ItemSpec(
+        code="SKIN_ARCHER_AZURE",
+        name="Trang phục Trời xanh",
+        kind=ItemKind.SKIN,
+        rarity=ItemRarity.RARE,
+        gold_price=SKIN_PRICE_RARE,
+    ),
+    ItemSpec(
+        code="SKIN_ARCHER_PLUM",
+        name="Trang phục Tím mận",
+        kind=ItemKind.SKIN,
+        rarity=ItemRarity.EPIC,
+        gold_price=SKIN_PRICE_EPIC,
+    ),
     ItemSpec(
         code="CARD_STREAK",
         name="Thẻ Chuyên cần",
@@ -551,6 +719,24 @@ ITEMS = (
         name="Thẻ Quán quân",
         kind=ItemKind.CARD,
         rarity=ItemRarity.LEGENDARY,
+    ),
+    ItemSpec(
+        code="CARD_BOOKWORM",
+        name="Thẻ Mọt sách",
+        kind=ItemKind.CARD,
+        rarity=ItemRarity.COMMON,
+    ),
+    ItemSpec(
+        code="CARD_EXPLORER",
+        name="Thẻ Khai phá",
+        kind=ItemKind.CARD,
+        rarity=ItemRarity.RARE,
+    ),
+    ItemSpec(
+        code="CARD_TREASURE",
+        name="Thẻ Kho báu",
+        kind=ItemKind.CARD,
+        rarity=ItemRarity.EPIC,
     ),
 )
 

@@ -126,6 +126,7 @@ class FakeGame:
             gold=0,
             class_code=None,
             class_name=None,
+            skin_code=None,
             energy=EnergyRead(current=5, maximum=5, next_regen_at=None),
             day_streak=0,
             best_day_streak=0,

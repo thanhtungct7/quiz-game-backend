@@ -51,6 +51,7 @@ from app.schemas.game.game import (
     SkillTreeRead,
 )
 from app.services.game.cefr import LEVEL_CAPS
+from app.services.game.combat_stats import attack_for
 from app.services.game.energy import MAX_ENERGY, current_energy, next_regen_at
 from app.services.game.leveling import (
     effective_level,
@@ -128,6 +129,7 @@ class GameService:
             gold=profile.gold,
             class_code=profile.class_code,
             class_name=class_row.name if class_row is not None else None,
+            skin_code=profile.skin_code,
             energy=self._energy_read(profile),
             day_streak=profile.day_streak,
             best_day_streak=profile.best_day_streak,
@@ -206,6 +208,7 @@ class GameService:
                 name=row.name,
                 description=row.description,
                 max_hp=row.max_hp,
+                atk=attack_for(row.damage_permille),
                 damage_permille=row.damage_permille,
                 starting_mana=row.starting_mana,
                 defence=row.defence,
