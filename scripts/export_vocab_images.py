@@ -30,14 +30,19 @@ DEFAULT_QUALITY = 65
 
 
 def asset_path(path: str) -> str | None:
-    """`vocab/images/01_0001.jpg` -> `vocab/images/01_0001.webp`; None for anything but a picture."""
+    """`vocab/images/01_0001.jpg` -> `vocab/images/01_0001.webp`.
+
+    None for anything but a picture.
+    """
     if not path.startswith(IMAGE_PREFIX):
         return None
     return path.rsplit(".", 1)[0] + ".webp"
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser = argparse.ArgumentParser(
+        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
+    )
     parser.add_argument("--vocab", default=DEFAULT_OUT, help="JSON written by scripts.convert")
     parser.add_argument("--src", default=DEFAULT_SRC, help="unzipped .apkg folder")
     parser.add_argument("--assets", default=str(DEFAULT_ASSETS), help="the app's assets folder")

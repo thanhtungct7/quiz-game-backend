@@ -134,7 +134,9 @@ def media_items(entry: dict[str, Any]) -> Iterator[dict[str, str]]:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser = argparse.ArgumentParser(
+        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
+    )
     parser.add_argument("--src", default=DEFAULT_SRC, help="unzipped .apkg folder")
     parser.add_argument("--out", default=DEFAULT_OUT, help="output JSON file")
     args = parser.parse_args()
@@ -160,24 +162,27 @@ def main() -> None:
     result = []
     missing: list[tuple[int, str]] = []
 
+    def media(
+        note_id: int, fields: dict[str, str], field: str, pattern: re.Pattern[str]
+    ) -> list[dict[str, str]]:
+        files = []
+        for name in pattern.findall(fields.get(field, "")):
+            name = html.unescape(name)
+            num = name_to_num.get(name)
+            if num is None or not os.path.exists(os.path.join(args.src, num)):
+                missing.append((note_id, name))
+                continue
+            files.append({"path": storage_path(name), "anki_file": num})
+        return files
+
     for note_id, mid, flds in rows:
         model = models[str(mid)]
         mapping = FIELD_MAP.get(model["name"])
         if mapping is None:
             raise SystemExit(f"note {note_id}: unknown note type {model['name']!r}")
         field_names = [fld["name"] for fld in sorted(model["flds"], key=lambda fld: fld["ord"])]
-        fields = dict(zip(field_names, flds.split("\x1f")))
-
-        def media(field: str, pattern: re.Pattern[str]) -> list[dict[str, str]]:
-            files = []
-            for name in pattern.findall(fields.get(field, "")):
-                name = html.unescape(name)
-                num = name_to_num.get(name)
-                if num is None or not os.path.exists(os.path.join(args.src, num)):
-                    missing.append((note_id, name))
-                    continue
-                files.append({"path": storage_path(name), "anki_file": num})
-            return files
+        # Not strict: a note whose type gained a field since it was written simply lacks it.
+        fields = dict(zip(field_names, flds.split("\x1f"), strict=False))
 
         ipa = clean_text(fields.get(mapping["ipa"], ""))
         # "[ɡreɪ]" -> "ɡreɪ", but keep "BrE [heə(r)] NAmE [her]" whole.
@@ -209,12 +214,14 @@ def main() -> None:
         }
         for key in MEDIA_KEYS:
             field = mapping.get(key)
-            files = media(field, IMG_RE if key == "image" else SOUND_RE) if field else []
+            pattern = IMG_RE if key == "image" else SOUND_RE
+            files = media(note_id, fields, field, pattern) if field else []
             entry[key] = files[0] if files else None
             if len(files) > 1:
                 entry[f"{key}_extra"] = files[1:]
 
-        numbered = NUMBERED_RE.match(entry["image"]["path"].rsplit("/", 1)[-1]) if entry["image"] else None
+        image_name = entry["image"]["path"].rsplit("/", 1)[-1] if entry["image"] else None
+        numbered = NUMBERED_RE.match(image_name) if image_name else None
         if entry["book"] is not None and numbered:
             entry["unit"], entry["index"] = int(numbered.group(1)), int(numbered.group(2))
         result.append(entry)

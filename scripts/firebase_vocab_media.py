@@ -60,9 +60,15 @@ def is_in_place(blob: Any, size: int) -> bool:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser = argparse.ArgumentParser(
+        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
+    )
     parser.add_argument("--vocab", default=DEFAULT_OUT, help="JSON written by scripts.convert")
-    parser.add_argument("--src", default=DEFAULT_SRC, help="unzipped .apkg folder, for files missing from the bucket")
+    parser.add_argument(
+        "--src",
+        default=DEFAULT_SRC,
+        help="unzipped .apkg folder, for files missing from the bucket",
+    )
     parser.add_argument("--bucket", default=DEFAULT_BUCKET)
     parser.add_argument("--apply", action="store_true", help="write for real (default: dry run)")
     args = parser.parse_args()
@@ -141,7 +147,9 @@ def main() -> None:
                 print(f"  {done}/{len(todo)}", flush=True)
 
     placed = {blob.name: blob for blob in bucket.list_blobs(prefix=f"{STORAGE_PREFIX}/")}
-    wrong = [path for path, size in expected_size.items() if not is_in_place(placed.get(path), size)]
+    wrong = [
+        path for path, size in expected_size.items() if not is_in_place(placed.get(path), size)
+    ]
     types = Counter(placed[path].content_type for path in expected_size if path in placed)
     print(f"Wrote {len(todo) - len(failed)}, failed {len(failed)}.")
     print(

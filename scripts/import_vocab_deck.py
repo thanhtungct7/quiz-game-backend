@@ -435,7 +435,10 @@ async def remove_deck() -> None:
         remaining = [unit_id for unit_id, title in existing if not _is_vocab_unit(title)]
         await _renumber(session, course_id, remaining)
         await session.commit()
-    print(f"Removed {len(vocab_ids)} vocabulary units; {len(remaining)} units renumbered 1..{len(remaining)}.")
+    print(
+        f"Removed {len(vocab_ids)} vocabulary units; "
+        f"{len(remaining)} units renumbered 1..{len(remaining)}."
+    )
 
 
 async def main(remove: bool, seed: int) -> None:
@@ -449,7 +452,9 @@ async def main(remove: bool, seed: int) -> None:
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser = argparse.ArgumentParser(
+        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
+    )
     parser.add_argument(
         "--remove",
         action="store_true",

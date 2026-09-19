@@ -1,4 +1,5 @@
 import re
+from itertools import pairwise
 from random import Random
 from typing import Any
 
@@ -49,7 +50,10 @@ def _book(book: int) -> list[dict[str, Any]]:
 def test_a_book_becomes_nine_full_units() -> None:
     units = plan_units(_book(1))
     assert len(units) == 9
-    assert [unit.title for unit in units[:2]] == ["Từ vựng Book 1 · Chặng 1", "Từ vựng Book 1 · Chặng 2"]
+    assert [unit.title for unit in units[:2]] == [
+        "Từ vựng Book 1 · Chặng 1",
+        "Từ vựng Book 1 · Chặng 2",
+    ]
     for unit in units:
         assert len(unit.lessons) == LESSONS_PER_UNIT
         assert all(len(lesson.questions) == WORDS_PER_LESSON for lesson in unit.lessons)
@@ -57,7 +61,7 @@ def test_a_book_becomes_nine_full_units() -> None:
 
 def test_neighbouring_lessons_are_never_the_same_kind() -> None:
     lessons = [lesson for unit in plan_units(_book(1) + _book(2)) for lesson in unit.lessons]
-    assert all(a.kind != b.kind for a, b in zip(lessons, lessons[1:]))
+    assert all(a.kind != b.kind for a, b in pairwise(lessons))
 
 
 def test_every_word_is_asked_once_in_each_kind() -> None:
@@ -79,7 +83,7 @@ def test_each_question_has_four_distinct_options_and_one_answer() -> None:
 
 def test_options_carry_the_media_their_kind_needs() -> None:
     words = _book(1)[:20]
-    rng = Random(1)
+    rng = Random(1)  # noqa: S311 - deterministic test fixture
     picture = build_question(words[0], KIND_PICTURE, words, rng)
     assert all(option.image_src and not option.audio_src for option in picture.options)
     definition = build_question(words[0], KIND_DEFINITION, words, rng)
@@ -91,7 +95,7 @@ def test_options_carry_the_media_their_kind_needs() -> None:
 
 def test_the_picture_prompt_names_the_word_and_its_option_shows_that_words_image() -> None:
     words = _book(1)[:20]
-    question = build_question(words[3], KIND_PICTURE, words, Random(1))
+    question = build_question(words[3], KIND_PICTURE, words, Random(1))  # noqa: S311
     assert question.question == 'Chọn hình ảnh cho từ "word4"'
     correct = next(option for option in question.options if option.correct)
     assert correct.image_src == "vocab/images/01_0004.jpg"
@@ -101,7 +105,7 @@ def test_a_word_without_an_example_is_asked_by_its_definition() -> None:
     words = _book(1)[:20]
     words[0]["example_masked"] = None
     words[0]["example_answer"] = None
-    question = build_question(words[0], KIND_EXAMPLE, words, Random(1))
+    question = build_question(words[0], KIND_EXAMPLE, words, Random(1))  # noqa: S311
     assert question.kind == KIND_DEFINITION
     assert question.question == "A ___ is a thing."
 
@@ -137,4 +141,5 @@ def test_the_real_deck_plans_cleanly() -> None:
                 if question.kind in (KIND_DEFINITION, KIND_EXAMPLE):
                     # The prompt must not name the answer anywhere the blank does not.
                     answer = re.escape(question.correct_text)
-                    assert not re.search(rf"(?<![A-Za-z]){answer}(?![A-Za-z])", question.question, re.I)
+                    unbounded = rf"(?<![A-Za-z]){answer}(?![A-Za-z])"
+                    assert not re.search(unbounded, question.question, re.I)

@@ -44,7 +44,8 @@ def test_text_without_the_tag_cannot_be_masked() -> None:
 
 def test_the_word_is_hidden_where_the_italics_missed_it() -> None:
     masked, _ = mask("To <i>ride</i> something is to travel on it. You can ride an animal.", "i")
-    assert hide_word(masked, "ride") == "To ___ something is to travel on it. You can ___ an animal."
+    expected = "To ___ something is to travel on it. You can ___ an animal."
+    assert hide_word(masked, "ride") == expected
 
 
 def test_hiding_a_word_leaves_longer_words_that_contain_it() -> None:

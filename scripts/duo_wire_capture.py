@@ -194,7 +194,7 @@ def ws_frames() -> list[dict[str, Any]]:
         envelope(
             ServerEvent.QUESTION_PUSH,
             QuestionPushData(
-                token="0f3a9c1d8b4e4d1fa2c7e5b90d61a473",
+                token="0f3a9c1d8b4e4d1fa2c7e5b90d61a473",  # noqa: S106 -- a question token
                 question=_question(),
                 pushed_at=1_207_540,
                 deck_remaining=3,
@@ -232,7 +232,7 @@ def ws_frames() -> list[dict[str, Any]]:
         envelope(
             ServerEvent.ANSWER_RESULT,
             AnswerResultData(
-                token="0f3a9c1d8b4e4d1fa2c7e5b90d61a473",
+                token="0f3a9c1d8b4e4d1fa2c7e5b90d61a473",  # noqa: S106 -- a question token
                 correct=True,
                 option_id=CORRECT_OPTION,
                 elapsed_ms=1_240,
@@ -287,7 +287,7 @@ def ws_frames() -> list[dict[str, Any]]:
                 deck_size=3,
                 server_time_ms=1_212_000,
                 deadline_at=1_275_000,
-                token="6c2b7e10a94f4b6c8f1d3a5e7b904c2d",
+                token="6c2b7e10a94f4b6c8f1d3a5e7b904c2d",  # noqa: S106 -- a question token
                 question=_question(),
                 pushed_at=1_211_800,
                 your_deck_remaining=2,
