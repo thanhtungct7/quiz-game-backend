@@ -5,7 +5,7 @@ from datetime import UTC, date, datetime, timedelta
 from app.models.game.season import GameSeason
 from app.models.notification.notification_dispatch import NotificationKind
 from app.models.notification.user_device_token import DeviceType
-from app.repository.notification.device_token_repository import Recipient
+from app.repository.notification.device_token_repository import QuestRecipient, Recipient
 from app.services.notification.messages import ROUTE_LEADERBOARD, PushMessage
 from app.services.notification.notification_service import NotificationService
 
@@ -47,6 +47,9 @@ class FakeTokens:
         self.profiles: dict[str, tuple[int, date | None]] = {}
         self.upserts: list[tuple[str, str, DeviceType]] = []
         self.removals: list[tuple[str, str]] = []
+        # user -> (points, quests left, chests opened) for the quest reminder.
+        self.quest_days: dict[str, tuple[int, int, int]] = {}
+        self.quest_query: dict[str, object] = {}
 
     def add(
         self, user_id: str, *tokens: str, streak: int = 0, last_active: date | None = None
@@ -85,6 +88,29 @@ class FakeTokens:
                 if last_active >= not_active_on:
                     continue
             recipients.append(Recipient(user_id, streak, last_active))
+        return recipients[:limit]
+
+    async def pending_quest_recipients(
+        self,
+        kind: str,
+        dedupe_key: str,
+        day: date,
+        *,
+        milestones: list[int],
+        limit: int,
+    ) -> list[QuestRecipient]:
+        self.quest_query = {"milestones": milestones}
+        recipients: list[QuestRecipient] = []
+        for user_id in sorted({device.user_id for device in self.devices if device.active}):
+            if (user_id, kind, dedupe_key) in self.dispatches.sent:
+                continue
+            _, last_active = self.profiles.get(user_id, (0, None))
+            if last_active != day or user_id not in self.quest_days:
+                continue
+            points, left, opened = self.quest_days[user_id]
+            ready = sum(1 for milestone in milestones if points >= milestone) - opened
+            if left > 0 or ready > 0:
+                recipients.append(QuestRecipient(user_id, left, ready))
         return recipients[:limit]
 
     async def active_tokens_by_user(self, user_ids: list[str]) -> dict[str, list[str]]:
@@ -197,6 +223,55 @@ async def test_one_failed_request_does_not_stop_the_others() -> None:
 
     assert sent == 2
     assert sender.tokens_sent() == ["b1"]
+
+
+# 21:45 on the 14th in Vietnam.
+QUEST_EVENING = datetime(2026, 9, 14, 14, 45, tzinfo=UTC)
+
+
+async def test_no_quest_reminder_goes_out_before_half_past_nine() -> None:
+    service, tokens, _, sender = _setup()
+    tokens.add("a", "a1", last_active=TODAY)
+    tokens.quest_days["a"] = (25, 3, 0)
+
+    sent = await service.send_quest_reminders(
+        datetime(2026, 9, 14, 14, 29, tzinfo=UTC), 21, 30
+    )
+
+    assert sent == 0
+    assert sender.sent == []
+
+
+async def test_learners_with_quests_or_chests_left_are_nudged_once() -> None:
+    service, tokens, _, sender = _setup()
+    tokens.add("halfway", "h1", last_active=TODAY)
+    tokens.quest_days["halfway"] = (55, 2, 1)
+    tokens.add("unopened", "u1", last_active=TODAY)
+    tokens.quest_days["unopened"] = (100, 0, 1)
+    tokens.add("done", "d1", last_active=TODAY)
+    tokens.quest_days["done"] = (100, 0, 3)
+
+    first = await service.send_quest_reminders(QUEST_EVENING, 21, 30)
+    again = await service.send_quest_reminders(QUEST_EVENING, 21, 30)
+
+    assert (first, again) == (2, 0)
+    assert sender.tokens_sent() == ["h1", "u1"]
+    bodies = {tokens_[0]: message.body for tokens_, message in sender.sent}
+    assert "2 nhiệm vụ" in bodies["h1"]
+    assert "2 rương" in bodies["u1"]
+    assert tokens.quest_query == {"milestones": [30, 60, 100]}
+
+
+async def test_the_quest_reminder_skips_learners_the_streak_reminder_is_for() -> None:
+    """Who has not studied today gets the streak reminder instead, so nobody
+    is pushed twice in one evening."""
+    service, tokens, _, sender = _setup()
+    tokens.add("idle", "i1", last_active=TODAY - timedelta(days=1))
+    tokens.quest_days["idle"] = (0, 4, 0)
+
+    sent = await service.send_quest_reminders(QUEST_EVENING, 21, 30)
+
+    assert sent == 0
 
 
 def _season(starts_at: datetime) -> GameSeason:

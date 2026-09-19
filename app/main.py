@@ -20,6 +20,7 @@ from app.db.session import AsyncSessionFactory, engine
 from app.repository.auth.user_repository import UserRepository
 from app.repository.game.achievement_repository import AchievementRepository
 from app.repository.game.catalog_repository import CatalogRepository
+from app.repository.game.daily_quest_repository import DailyQuestRepository
 from app.repository.game.item_repository import ItemRepository
 from app.repository.game.monster_repository import MonsterRepository
 from app.repository.game.season_repository import SeasonRepository
@@ -32,6 +33,7 @@ from app.services.game.catalog import (
     seed_item_catalog,
     seed_monster_catalog,
 )
+from app.services.game.quest_catalog import seed_quest_catalog
 from app.services.game.season_service import ensure_active_season
 from app.services.pve.battle_runtime import engine as battle_engine
 from app.services.pve.housekeeping import abandon_orphaned_battles
@@ -57,6 +59,9 @@ async def lifespan(_: FastAPI) -> AsyncIterator[None]:
         # it takes for accounts that predate them to unlock retroactively on
         # their next sync.
         await seed_achievement_catalog(AchievementRepository(db))
+        # Only the pool quests are drawn from; nobody's set changes until the
+        # next day is drawn.
+        await seed_quest_catalog(DailyQuestRepository(db))
         await ensure_active_season(SeasonRepository(db))
 
     # Duo match state lives in this process, so anything left IN_PROGRESS

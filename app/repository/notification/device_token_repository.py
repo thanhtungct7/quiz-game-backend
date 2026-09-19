@@ -1,11 +1,12 @@
 from dataclasses import dataclass
 from datetime import UTC, date, datetime
 
-from sqlalchemy import delete, exists, or_, select, update
+from sqlalchemy import ColumnElement, case, delete, exists, func, literal, or_, select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.auth.user import User
+from app.models.game.daily_quest import UserDailyActivityChest, UserDailyQuest
 from app.models.game.user_game_profile import UserGameProfile
 from app.models.notification.notification_dispatch import NotificationDispatch
 from app.models.notification.user_device_token import DeviceType, UserDeviceToken
@@ -18,6 +19,15 @@ class Recipient:
     user_id: str
     day_streak: int
     last_active_date: date | None
+
+
+@dataclass(frozen=True)
+class QuestRecipient:
+    """A user the evening quest nudge is due for, with where their day stands."""
+
+    user_id: str
+    quests_left: int
+    chests_ready: int
 
 
 class DeviceTokenRepository:
@@ -110,6 +120,87 @@ class DeviceTokenRepository:
         return [
             Recipient(user_id=user_id, day_streak=streak or 0, last_active_date=last_active)
             for user_id, streak, last_active in result.all()
+        ]
+
+    async def pending_quest_recipients(
+        self,
+        kind: str,
+        dedupe_key: str,
+        day: date,
+        *,
+        milestones: list[int],
+        limit: int,
+    ) -> list[QuestRecipient]:
+        """Users with a live device, not yet sent this occasion, who studied on
+        `day` and have something left there: a quest unfinished, or a chest
+        reached and not opened.
+
+        "Studied on `day`" keeps this apart from the streak reminder, which goes
+        to exactly the users who did not -- so nobody gets both in one evening.
+        The day's points are summed from the quests finished, the same way the
+        quest screen counts them.
+        """
+        points = func.coalesce(
+            func.sum(
+                case(
+                    (UserDailyQuest.completed_at.is_not(None), UserDailyQuest.activity_points),
+                    else_=0,
+                )
+            ),
+            0,
+        )
+        quests = (
+            select(
+                UserDailyQuest.user_id.label("user_id"),
+                points.label("points"),
+                func.count().filter(UserDailyQuest.completed_at.is_(None)).label("quests_left"),
+            )
+            .where(UserDailyQuest.quest_date == day)
+            .group_by(UserDailyQuest.user_id)
+            .subquery()
+        )
+        opened = (
+            select(
+                UserDailyActivityChest.user_id.label("user_id"),
+                func.count().label("opened"),
+            )
+            .where(UserDailyActivityChest.quest_date == day)
+            .group_by(UserDailyActivityChest.user_id)
+            .subquery()
+        )
+        reached: ColumnElement[int] = literal(0)
+        for milestone in milestones:
+            reached = reached + case((quests.c.points >= milestone, 1), else_=0)
+        chests_ready = reached - func.coalesce(opened.c.opened, 0)
+        already_sent = exists().where(
+            NotificationDispatch.user_id == User.id,
+            NotificationDispatch.kind == kind,
+            NotificationDispatch.dedupe_key == dedupe_key,
+        )
+        has_live_device = exists().where(
+            UserDeviceToken.user_id == User.id,
+            UserDeviceToken.is_active.is_(True),
+        )
+        statement = (
+            select(User.id, quests.c.quests_left, chests_ready)
+            .select_from(User)
+            .join(quests, quests.c.user_id == User.id)
+            .join(UserGameProfile, UserGameProfile.user_id == User.id)
+            .outerjoin(opened, opened.c.user_id == User.id)
+            .where(
+                User.is_active.is_(True),
+                has_live_device,
+                ~already_sent,
+                UserGameProfile.last_active_date == day,
+                or_(quests.c.quests_left > 0, chests_ready > 0),
+            )
+            .order_by(User.id)
+            .limit(limit)
+        )
+        result = await self.db.execute(statement)
+        return [
+            QuestRecipient(user_id=user_id, quests_left=int(left), chests_ready=max(0, int(ready)))
+            for user_id, left, ready in result.all()
         ]
 
     async def active_tokens_by_user(self, user_ids: list[str]) -> dict[str, list[str]]:

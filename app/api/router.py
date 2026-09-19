@@ -12,7 +12,7 @@ from app.api.routes.content import (
 )
 from app.api.routes.conversation import conversation
 from app.api.routes.duo import duo, duo_ws
-from app.api.routes.game import benchmark_exam, game
+from app.api.routes.game import benchmark_exam, game, quests
 from app.api.routes.notification import notifications
 from app.api.routes.profile import profile
 from app.api.routes.progress import progress
@@ -35,6 +35,7 @@ api_router.include_router(game.router, prefix="/game", tags=["game"])
 api_router.include_router(
     benchmark_exam.router, prefix="/game/benchmark-exam", tags=["game"]
 )
+api_router.include_router(quests.router, prefix="/quests", tags=["quests"])
 api_router.include_router(battle.router, prefix="/battles", tags=["pve"])
 api_router.include_router(battle_ws.router, prefix="/battles", tags=["pve"])
 api_router.include_router(

@@ -9,6 +9,8 @@ from datetime import UTC, datetime
 from app.repository.game.activity_repository import ActivityRepository
 from app.repository.game.game_profile_repository import GameProfileRepository
 from app.services.game.achievement_service import AchievementService
+from app.services.game.daily_quest_service import DailyQuestTracker
+from app.services.game.daily_quests import QuestEvent
 from app.services.game.energy import REVIEW_REFILL
 from app.services.game.energy_service import EnergyService
 from app.services.game.streak import streak_after, today_in_streak_tz
@@ -21,12 +23,14 @@ class LessonRewardService:
         profiles: GameProfileRepository,
         activity: ActivityRepository,
         achievements: AchievementService | None = None,
+        quests: DailyQuestTracker | None = None,
     ) -> None:
         self.profiles = profiles
         self.activity = activity
         # Optional for the same reason the settlement service's extras are:
         # a caller that leaves it out gets no achievement sync, not an error.
         self.achievements = achievements
+        self.quests = quests
 
     async def on_lesson_completed(self, user_id: str) -> None:
         """Called once, the first time a lesson reaches COMPLETED."""
@@ -54,3 +58,5 @@ class LessonRewardService:
         # running can be earned by the third day rather than the fourth.
         if self.achievements is not None:
             await self.achievements.sync(user_id)
+        if self.quests is not None:
+            await self.quests.track_quietly(user_id, QuestEvent(new_lessons=1), now)

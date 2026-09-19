@@ -3,6 +3,9 @@ from typing import NoReturn
 from fastapi import HTTPException, status
 
 from app.core.exceptions import (
+    ActivityChestAlreadyClaimedError,
+    ActivityChestLockedError,
+    ActivityChestNotFoundError,
     BenchmarkExamAlreadyClearedError,
     BenchmarkExamAttemptClosedError,
     BenchmarkExamAttemptNotFoundError,
@@ -12,6 +15,10 @@ from app.core.exceptions import (
     BenchmarkExamQuestionNotInAttemptError,
     ChallengeNotFoundError,
     ChallengeOptionNotFoundError,
+    DailyQuestAlreadyClaimedError,
+    DailyQuestExpiredError,
+    DailyQuestNotCompletedError,
+    DailyQuestNotFoundError,
     GameClassNotFoundError,
     InvalidAnswerSubmissionError,
     InvalidEquipmentError,
@@ -31,6 +38,8 @@ _NOT_FOUND_ERRORS = (
     ItemNotFoundError,
     BenchmarkExamAttemptNotFoundError,
     ChallengeNotFoundError,
+    DailyQuestNotFoundError,
+    ActivityChestNotFoundError,
 )
 # Conditions the caller could fix by choosing differently, all 400.
 _BAD_REQUEST_ERRORS = (
@@ -45,6 +54,8 @@ _BAD_REQUEST_ERRORS = (
     # An option id that is not on the question is a malformed answer here, not
     # a missing resource the caller could go and find.
     ChallengeOptionNotFoundError,
+    DailyQuestNotCompletedError,
+    ActivityChestLockedError,
 )
 # Already have it, so the request is not wrong -- it is simply too late.
 _CONFLICT_ERRORS = (
@@ -54,6 +65,10 @@ _CONFLICT_ERRORS = (
     BenchmarkExamAttemptClosedError,
     BenchmarkExamQuestionAlreadyAnsweredError,
     BenchmarkExamNotEnoughQuestionsError,
+    DailyQuestAlreadyClaimedError,
+    ActivityChestAlreadyClaimedError,
+    # Yesterday's quest: not wrong, just past its day.
+    DailyQuestExpiredError,
 )
 
 

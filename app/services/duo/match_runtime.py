@@ -58,6 +58,7 @@ from app.schemas.duo.events import (
     StreakChangeRead,
     envelope,
 )
+from app.schemas.game.quest import QuestCompletedRead
 from app.services.auth.avatar_url import resolve_avatar_url
 from app.services.duo import clock
 from app.services.duo.persistence import (
@@ -1054,6 +1055,12 @@ class DuoEngine:
                     loot=_loot_read(rewards.loot.get(user_id)),
                     season=_season_read(rewards.season.get(user_id)),
                     streak=_streak_read(rewards.streak.get(user_id)),
+                    quests_completed=[
+                        QuestCompletedRead(
+                            id=quest.id, title=quest.title, activity_points=quest.activity_points
+                        )
+                        for quest in rewards.quests.get(user_id, [])
+                    ],
                 ),
             )
 

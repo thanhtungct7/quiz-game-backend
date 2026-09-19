@@ -9,24 +9,28 @@ missed reminder is the better failure than a repeated one.
 """
 
 import logging
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from datetime import datetime
+from typing import Protocol
 
 from app.models.game.season import GameSeason
 from app.models.notification.notification_dispatch import NotificationKind
 from app.models.notification.user_device_token import DeviceType
 from app.repository.notification.device_token_repository import (
     DeviceTokenRepository,
-    Recipient,
+    QuestRecipient,
 )
 from app.repository.notification.notification_dispatch_repository import (
     NotificationDispatchRepository,
 )
+from app.services.game.daily_quests import CHESTS
 from app.services.game.streak import today_in_streak_tz
 from app.services.notification.messages import (
     PushMessage,
+    is_quest_reminder_due,
     is_season_announcement_due,
     is_streak_reminder_due,
+    quest_reminder,
     season_started,
     streak_reminder,
 )
@@ -35,6 +39,12 @@ from app.services.notification.push_sender import PushSender
 logger = logging.getLogger(__name__)
 
 RECIPIENTS_PER_SWEEP = 500
+
+
+class _HasUserId(Protocol):
+    @property
+    def user_id(self) -> str: ...
+
 
 
 class NotificationService:
@@ -81,6 +91,28 @@ class NotificationService:
             ),
         )
 
+    async def send_quest_reminders(
+        self, now: datetime, reminder_hour: int, reminder_minute: int
+    ) -> int:
+        """Nudge everyone who studied today and still has quests or chests left,
+        once, after the reminder time."""
+        if not is_quest_reminder_due(now, reminder_hour, reminder_minute):
+            return 0
+        today = today_in_streak_tz(now)
+        key = today.isoformat()
+        recipients = await self.tokens.pending_quest_recipients(
+            NotificationKind.QUEST_REMINDER,
+            key,
+            today,
+            milestones=[chest.milestone for chest in CHESTS],
+            limit=RECIPIENTS_PER_SWEEP,
+        )
+
+        def compose(recipient: QuestRecipient) -> PushMessage:
+            return quest_reminder(recipient.quests_left, recipient.chests_ready)
+
+        return await self._deliver(recipients, NotificationKind.QUEST_REMINDER, key, compose)
+
     async def announce_season(self, season: GameSeason | None, now: datetime) -> int:
         """Tell everyone a new season is open, during the first day it runs."""
         if season is None or not is_season_announcement_due(season.starts_at, now):
@@ -93,12 +125,12 @@ class NotificationService:
             recipients, NotificationKind.SEASON_STARTED, season.code, lambda _: message
         )
 
-    async def _deliver(
+    async def _deliver[R: _HasUserId](
         self,
-        recipients: list[Recipient],
+        recipients: Sequence[R],
         kind: NotificationKind,
         dedupe_key: str,
-        compose: Callable[[Recipient], PushMessage],
+        compose: Callable[[R], PushMessage],
     ) -> int:
         """Claim, then send. Returns how many users were claimed."""
         if not recipients:

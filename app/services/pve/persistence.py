@@ -11,6 +11,7 @@ and extends the streak with no new code at the progress layer -- and so that
 correctness has exactly one source of truth.
 """
 
+import logging
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Protocol
@@ -32,6 +33,7 @@ from app.repository.content.unit_repository import UnitRepository
 from app.repository.game.achievement_repository import AchievementRepository
 from app.repository.game.activity_repository import ActivityRepository
 from app.repository.game.catalog_repository import CatalogRepository
+from app.repository.game.daily_quest_repository import DailyQuestRepository
 from app.repository.game.game_profile_repository import GameProfileRepository
 from app.repository.game.gold_transaction_repository import GoldTransactionRepository
 from app.repository.game.item_repository import ItemRepository
@@ -43,6 +45,8 @@ from app.schemas.content.quiz import AnswerCheckResult, QuizSetWithAnswers
 from app.schemas.pve.events import ErrorCode, LessonProgressChange
 from app.services.content.quiz_service import QuizService
 from app.services.game.achievement_service import AchievementService
+from app.services.game.daily_quest_service import CompletedQuest, DailyQuestTracker
+from app.services.game.daily_quests import QuestEvent
 from app.services.game.lesson_rewards import LessonRewardService
 from app.services.game.loadout import PlayerLoadout
 from app.services.game.loadout_builder import LoadoutBuilder
@@ -63,6 +67,8 @@ from app.services.pve.state import LiveBattle
 # A path lesson holds about ten questions; the cap is only here so a bank
 # lesson opened by mistake cannot turn into a hundred-round fight.
 MAX_ROUNDS = 20
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -124,6 +130,10 @@ class BattlePersistence(Protocol):
     async def complete_lesson(self, user_id: str, lesson_id: str) -> None: ...
 
     async def lesson_progress(self, user_id: str, lesson_id: str) -> LessonProgressChange: ...
+
+    async def quests_completed_since(
+        self, user_id: str, since: datetime
+    ) -> list[CompletedQuest]: ...
 
 
 class DatabaseBattlePersistence:
@@ -216,6 +226,7 @@ class DatabaseBattlePersistence:
                     profiles=GameProfileRepository(db),
                     activity=ActivityRepository(db),
                     achievements=AchievementService(AchievementRepository(db)),
+                    quests=DailyQuestTracker(DailyQuestRepository(db)),
                 ),
             )
             try:
@@ -262,6 +273,9 @@ class DatabaseBattlePersistence:
             rewards = BattleRewards.empty()
             if result.status is BattleStatus.WON:
                 rewards = await self._pay(db, battle)
+            await DailyQuestTracker(DailyQuestRepository(db)).track_quietly(
+                battle.user_id, _quest_event(battle, result.status), datetime.now(UTC)
+            )
 
             record = await battles.get_by_id(battle.battle_id)
             if record is None:
@@ -344,8 +358,26 @@ class DatabaseBattlePersistence:
                     profiles=GameProfileRepository(db),
                     activity=ActivityRepository(db),
                     achievements=AchievementService(AchievementRepository(db)),
+                    quests=DailyQuestTracker(DailyQuestRepository(db)),
                 ),
             ).mark_lesson_completed(user_id, lesson_id)
+
+    async def quests_completed_since(
+        self, user_id: str, since: datetime
+    ) -> list[CompletedQuest]:
+        """What the battle finished, for the result screen. Read rather than
+        carried out of `save_result`, because the lesson it completes counts
+        too and that is written afterwards, by `complete_lesson`.
+
+        A failure here costs the result screen a line, never the result."""
+        try:
+            async with AsyncSessionFactory() as db:
+                return await DailyQuestTracker(DailyQuestRepository(db)).completed_since(
+                    user_id, since
+                )
+        except Exception:  # noqa: BLE001 -- see above
+            logger.exception("Could not read the quests %s finished during a battle", user_id)
+            return []
 
     async def lesson_progress(self, user_id: str, lesson_id: str) -> LessonProgressChange:
         """Where the lesson stands now that the battle's answers are in."""
@@ -364,3 +396,15 @@ class DatabaseBattlePersistence:
                 correct=row.correct_challenge_count,
                 total=row.total_challenge_count,
             )
+
+
+def _quest_event(battle: LiveBattle, status: BattleStatus) -> QuestEvent:
+    """What a battle counts toward the daily quests. Answers count however it
+    ended; a win, and a win without a scratch, only when it was one."""
+    won = status is BattleStatus.WON
+    return QuestEvent(
+        correct_answers=battle.correct_count,
+        best_combo=battle.best_combo,
+        battles_won=1 if won else 0,
+        flawless_wins=1 if won and not battle.took_damage else 0,
+    )

@@ -223,3 +223,32 @@ class ConversationTooShortError(ApplicationError):
 
 class DailyConversationLimitError(ApplicationError):
     """Raised when a learner starts more conversations in a day than allowed."""
+
+
+class DailyQuestNotFoundError(ApplicationError):
+    """Raised when a daily quest does not exist or belongs to another user."""
+
+
+class DailyQuestNotCompletedError(ApplicationError):
+    """Raised when a daily quest's reward is claimed before the quest is done."""
+
+
+class DailyQuestAlreadyClaimedError(ApplicationError):
+    """Raised when a daily quest's reward has already been claimed."""
+
+
+class DailyQuestExpiredError(ApplicationError):
+    """Raised when a quest from an earlier day is claimed: each day's set
+    expires at local midnight, unclaimed rewards with it."""
+
+
+class ActivityChestNotFoundError(ApplicationError):
+    """Raised when no activity chest sits at the requested milestone."""
+
+
+class ActivityChestLockedError(ApplicationError):
+    """Raised when a chest is opened before today's activity points reach it."""
+
+
+class ActivityChestAlreadyClaimedError(ApplicationError):
+    """Raised when today's chest at that milestone has already been opened."""

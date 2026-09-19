@@ -1,12 +1,16 @@
 from datetime import UTC, date, datetime, timedelta
 
 from app.services.notification.messages import (
+    QUEST_CHANNEL,
     ROUTE_LEADERBOARD,
     ROUTE_LEARN,
+    ROUTE_QUESTS,
     SEASON_CHANNEL,
     STREAK_CHANNEL,
+    is_quest_reminder_due,
     is_season_announcement_due,
     is_streak_reminder_due,
+    quest_reminder,
     season_started,
     streak_reminder,
 )
@@ -66,3 +70,28 @@ def test_the_season_announcement_opens_the_leaderboard() -> None:
     assert "Mùa 10/2026" in message.body
     assert message.channel_id == SEASON_CHANNEL
     assert message.data == {"route": ROUTE_LEADERBOARD}
+
+
+def test_the_quest_reminder_waits_for_half_past_nine_in_vietnam() -> None:
+    # 21:30 in Vietnam is 14:30 UTC; the window closes at local midnight.
+    assert not is_quest_reminder_due(_utc(14, 29), 21, 30)
+    assert is_quest_reminder_due(_utc(14, 30), 21, 30)
+    assert is_quest_reminder_due(_utc(16, 59), 21, 30)
+    assert not is_quest_reminder_due(_utc(17, 0), 21, 30)
+    # A later hour with an earlier minute is still later.
+    assert is_quest_reminder_due(_utc(15, 5), 21, 30)
+
+
+def test_chests_waiting_to_be_opened_come_first_in_the_quest_reminder() -> None:
+    message = quest_reminder(quests_left=1, chests_ready=2)
+
+    assert "2 rương" in message.body
+    assert message.channel_id == QUEST_CHANNEL
+    assert message.data == {"route": ROUTE_QUESTS}
+
+
+def test_otherwise_the_quest_reminder_counts_the_quests_left() -> None:
+    message = quest_reminder(quests_left=2, chests_ready=0)
+
+    assert "2 nhiệm vụ" in message.body
+    assert message.data == {"route": ROUTE_QUESTS}

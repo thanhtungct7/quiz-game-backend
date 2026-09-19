@@ -14,10 +14,12 @@ from app.services.game.streak import STREAK_TZ
 # learner can mute one kind of push without muting the other.
 STREAK_CHANNEL = "streak"
 SEASON_CHANNEL = "season"
+QUEST_CHANNEL = "quest"
 
 # Where a tap on the notification lands. The app maps these onto its own screens.
 ROUTE_LEARN = "learn"
 ROUTE_LEADERBOARD = "leaderboard"
+ROUTE_QUESTS = "quests"
 
 # A season can roll over at any hour; its announcement waits for the daytime.
 DAYTIME_START_HOUR = 9
@@ -48,6 +50,12 @@ def is_streak_reminder_due(now: datetime, reminder_hour: int) -> bool:
     """From `reminder_hour` until the day ends. Who has already been reminded
     today is the dispatch record's business, not the clock's."""
     return local_hour(now) >= reminder_hour
+
+
+def is_quest_reminder_due(now: datetime, reminder_hour: int, reminder_minute: int) -> bool:
+    """From that local time until the day ends, like the streak reminder."""
+    local = now.astimezone(STREAK_TZ)
+    return (local.hour, local.minute) >= (reminder_hour, reminder_minute)
 
 
 def is_season_announcement_due(season_started_at: datetime, now: datetime) -> bool:
@@ -86,4 +94,25 @@ def season_started(season_name: str) -> PushMessage:
         body=f"{season_name} đã bắt đầu. Tham gia tranh tài ngay.",
         channel_id=SEASON_CHANNEL,
         route=ROUTE_LEADERBOARD,
+    )
+
+
+def quest_reminder(quests_left: int, chests_ready: int) -> PushMessage:
+    """An evening nudge for a learner who has played today.
+
+    Chests already earned come first: they are a reward waiting, and they
+    expire at midnight with the rest of the day's set.
+    """
+    if chests_ready > 0:
+        return PushMessage(
+            title="🎁 Rương ngày đang chờ bạn",
+            body=f"Bạn còn {chests_ready} rương chưa mở. Vào nhận trước 0 giờ nhé!",
+            channel_id=QUEST_CHANNEL,
+            route=ROUTE_QUESTS,
+        )
+    return PushMessage(
+        title="⚡ Rương Vàng đang chờ bạn!",
+        body=f"Chỉ còn {quests_left} nhiệm vụ nữa để mở Rương Vàng hôm nay.",
+        channel_id=QUEST_CHANNEL,
+        route=ROUTE_QUESTS,
     )

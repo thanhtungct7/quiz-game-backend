@@ -11,13 +11,14 @@ from app.db.base import Base
 class NotificationKind(StrEnum):
     STREAK_REMINDER = "STREAK_REMINDER"
     SEASON_STARTED = "SEASON_STARTED"
+    QUEST_REMINDER = "QUEST_REMINDER"
 
 
 class NotificationDispatch(Base):
     """A scheduled push already sent to one user -- the record that keeps it to once.
 
     `dedupe_key` names the occasion within a kind: the local date for a streak
-    reminder, the season code for a season announcement. The unique constraint
+    or quest reminder, the season code for a season announcement. The unique constraint
     is what makes a send at-most-once even across a restart or a second process:
     the sender claims its recipients by inserting these rows first, and sends
     only to the rows it actually inserted.

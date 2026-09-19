@@ -30,6 +30,7 @@ from app.services.conversation.prompts import (
     HintSuggestion,
 )
 from app.services.conversation.scenarios import get_scenario
+from app.services.game.daily_quests import QuestEvent
 from app.services.game.leveling import exp_for_level
 
 # 10:00 in Vietnam.
@@ -137,10 +138,20 @@ class FakeLlm:
         return self.json_answers.pop(0)
 
 
+class FakeQuestTracker:
+    def __init__(self) -> None:
+        self.events: list[tuple[str, QuestEvent]] = []
+
+    async def track_quietly(self, user_id: str, event: QuestEvent, now: datetime) -> list[Any]:
+        self.events.append((user_id, event))
+        return []
+
+
 def _service(
     llm: FakeLlm | None = None,
     profile: UserGameProfile | None = None,
     conversations: FakeConversations | None = None,
+    quests: FakeQuestTracker | None = None,
 ) -> tuple[ConversationService, FakeConversations]:
     conversations = conversations or FakeConversations()
     service = ConversationService(
@@ -148,6 +159,7 @@ def _service(
         profiles=cast(Any, FakeProfiles(profile)),
         llm=llm,
         config=settings,
+        quests=cast(Any, quests),
     )
     return service, conversations
 
@@ -362,6 +374,20 @@ async def test_finishing_stores_tidied_feedback_and_never_pays_twice() -> None:
 
     history = await service.list_conversations(USER, limit=20, before=None)
     assert [(h.id, h.score) for h in history] == [(session_id, 100)]
+
+
+async def test_the_first_finish_counts_toward_the_daily_quest_and_a_repeat_does_not() -> None:
+    llm = FakeLlm()
+    quests = FakeQuestTracker()
+    service, _ = _service(llm, quests=quests)
+    session_id = (await service.start(USER, "cafe_order", NOW)).id
+    await service.send(USER, session_id, "I want coffee")
+    llm.json_answers = [_feedback()]
+
+    await service.finish(USER, session_id, NOW)
+    await service.finish(USER, session_id, NOW)
+
+    assert quests.events == [(USER, QuestEvent(ai_conversations=1))]
 
 
 async def test_open_conversation_feedback_has_no_goal_verdict() -> None:

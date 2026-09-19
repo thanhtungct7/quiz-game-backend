@@ -25,6 +25,7 @@ from app.models.game.skill import SkillEffect
 from app.models.progress.user_lesson_progress import LessonProgressStatus
 from app.models.pve.lesson_battle import BattleEndReason, BattleStatus
 from app.schemas.content.course_content import ChallengePublicRead
+from app.schemas.game.quest import QuestCompletedRead
 from app.services.game.combat import StrikeKind
 from app.services.pve.monster import MonsterIntentKind
 
@@ -320,6 +321,8 @@ class BattleFinishedData(BaseModel):
     lesson_progress: LessonProgressChange
     loot: LootDropRead | None = None
     streak: StreakChangeRead | None = None
+    # Daily quests this battle finished, the lesson it completed included.
+    quests_completed: list[QuestCompletedRead] = Field(default_factory=list)
 
 
 class PongData(BaseModel):

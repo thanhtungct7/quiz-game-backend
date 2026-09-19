@@ -67,12 +67,13 @@ async def roll_seasons() -> str | None:
         return season.code if season is not None else None
 
 
-async def send_scheduled_pushes() -> tuple[int, int]:
-    """One batch each of streak reminders and the new-season announcement.
+async def send_scheduled_pushes() -> tuple[int, int, int]:
+    """One batch each of streak reminders, quest reminders and the new-season
+    announcement.
 
     Ridden on the same minute as everything else here. Safe to run every
     sweep: `NotificationService` claims each recipient before sending, so a
-    reminder is never sent twice. Returns (reminded, announced).
+    reminder is never sent twice. Returns (reminded, nudged, announced).
     """
     now = datetime.now(UTC)
     async with AsyncSessionFactory() as db:
@@ -82,8 +83,11 @@ async def send_scheduled_pushes() -> tuple[int, int]:
             sender=get_push_sender(),
         )
         reminded = await service.send_streak_reminders(now, settings.streak_reminder_hour)
+        nudged = await service.send_quest_reminders(
+            now, settings.quest_reminder_hour, settings.quest_reminder_minute
+        )
         announced = await service.announce_season(await SeasonRepository(db).active(), now)
-        return reminded, announced
+        return reminded, nudged, announced
 
 
 async def sweep(engine: DuoEngine | None = None) -> None:
@@ -121,10 +125,13 @@ async def sweep(engine: DuoEngine | None = None) -> None:
         logger.info("Opened ladder season %s", opened)
 
     # Last, so a Firebase outage can never hold up the cleanup above.
-    reminded, announced = await send_scheduled_pushes()
-    if reminded or announced:
+    reminded, nudged, announced = await send_scheduled_pushes()
+    if reminded or nudged or announced:
         logger.info(
-            "Pushed %d streak reminder(s) and %d season announcement(s)", reminded, announced
+            "Pushed %d streak reminder(s), %d quest reminder(s) and %d season announcement(s)",
+            reminded,
+            nudged,
+            announced,
         )
 
 

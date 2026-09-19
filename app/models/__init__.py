@@ -15,6 +15,11 @@ from app.models.duo.duo_match_round import DuoMatchRound
 from app.models.duo.duo_rating import DuoRating
 from app.models.game.achievement import Achievement, UserAchievement
 from app.models.game.benchmark_exam_attempt import BenchmarkExamAttempt
+from app.models.game.daily_quest import (
+    DailyQuestTemplate,
+    UserDailyActivityChest,
+    UserDailyQuest,
+)
 from app.models.game.duo_match_skill_use import DuoMatchSkillUse
 from app.models.game.game_class import GameClass
 from app.models.game.game_item import GameItem
@@ -71,4 +76,7 @@ __all__ = [
     "NotificationDispatch",
     "ConversationSession",
     "ConversationMessage",
+    "DailyQuestTemplate",
+    "UserDailyQuest",
+    "UserDailyActivityChest",
 ]

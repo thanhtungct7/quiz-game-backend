@@ -39,6 +39,8 @@ from app.services.ai.llm_client import ChatTurn, LlmClient
 from app.services.conversation import prompts
 from app.services.conversation.scenarios import SCENARIOS, Scenario, get_scenario
 from app.services.game.cefr import CefrBand, cefr_for_level
+from app.services.game.daily_quest_service import DailyQuestTracker
+from app.services.game.daily_quests import QuestEvent
 from app.services.game.leveling import effective_level
 from app.services.game.streak import STREAK_TZ, today_in_streak_tz
 
@@ -56,11 +58,13 @@ class ConversationService:
         profiles: GameProfileRepository,
         llm: LlmClient | None,
         config: Settings,
+        quests: DailyQuestTracker | None = None,
     ) -> None:
         self.conversations = conversations
         self.profiles = profiles
         self.llm = llm
         self.config = config
+        self.quests = quests
 
     def list_scenarios(self) -> list[ScenarioRead]:
         return [_scenario_read(scenario) for scenario in SCENARIOS]
@@ -203,6 +207,9 @@ class ConversationService:
         session.status = ConversationStatus.FINISHED
         session.finished_at = now
         await self.conversations.save()
+        # Only the first finish gets here -- a repeat returns early above.
+        if self.quests is not None:
+            await self.quests.track_quietly(user_id, QuestEvent(ai_conversations=1), now)
         return await self._detail(session, scenario, messages)
 
     async def delete(self, user_id: str, session_id: str) -> None:

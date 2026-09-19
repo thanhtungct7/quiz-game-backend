@@ -20,6 +20,10 @@ class GoldReason(StrEnum):
     # exactly once; BATTLE_REPLAY is keyed on the battle and pays a share.
     BATTLE_WIN = "BATTLE_WIN"
     BATTLE_REPLAY = "BATTLE_REPLAY"
+    # Daily quests. DAILY_QUEST is keyed on the player's quest row, and
+    # ACTIVITY_CHEST on the row recording that chest as opened.
+    DAILY_QUEST = "DAILY_QUEST"
+    ACTIVITY_CHEST = "ACTIVITY_CHEST"
 
 
 class GoldTransaction(Base):

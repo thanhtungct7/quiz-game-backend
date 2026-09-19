@@ -25,6 +25,7 @@ from app.models.game.skill import SkillEffect
 from app.schemas.content.course_content import ChallengePublicRead
 from app.schemas.duo.duo import DuoSettingsRead, DuoSettingsRequest
 from app.schemas.game.player_card import PlayerCardRead
+from app.schemas.game.quest import QuestCompletedRead
 from app.services.duo.scoring import MatchOutcome
 from app.services.game.combat import StrikeKind
 from app.services.game.season import RankTier
@@ -381,6 +382,8 @@ class MatchFinishedData(BaseModel):
     season: SeasonChangeRead | None = None
     streak: StreakChangeRead | None = None
     energy_left: int | None = None
+    # Daily quests this match finished for the player it is sent to.
+    quests_completed: list[QuestCompletedRead] = Field(default_factory=list)
 
 
 class SkillUsedData(BaseModel):

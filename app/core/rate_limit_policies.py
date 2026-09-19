@@ -39,6 +39,8 @@ EXAM_ANSWER_PER_USER = RateLimit(limit=60, window_seconds=MINUTE)
 
 # --- game writes: gold, class, skills, equipment -------------------------------------------
 GAME_WRITE_PER_USER = RateLimit(limit=30, window_seconds=MINUTE)
+# Four quests and three chests a day; the rest is a client retrying or tapping twice.
+QUEST_CLAIM_PER_USER = RateLimit(limit=30, window_seconds=MINUTE)
 
 # --- duo -----------------------------------------------------------------------------------
 # Room codes are short; this is what keeps them from being enumerated.

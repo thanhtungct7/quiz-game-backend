@@ -26,6 +26,7 @@ from app.repository.duo.duo_rating_repository import DuoRatingRepository
 from app.repository.game.achievement_repository import AchievementRepository
 from app.repository.game.activity_repository import ActivityRepository
 from app.repository.game.catalog_repository import CatalogRepository
+from app.repository.game.daily_quest_repository import DailyQuestRepository
 from app.repository.game.game_profile_repository import GameProfileRepository
 from app.repository.game.gold_transaction_repository import GoldTransactionRepository
 from app.repository.game.item_repository import ItemRepository
@@ -38,6 +39,8 @@ from app.services.duo import rating as elo
 from app.services.duo.scoring import MatchOutcome
 from app.services.duo.state import LiveMatch, MatchSettings
 from app.services.game.achievement_service import AchievementService
+from app.services.game.daily_quest_service import CompletedQuest, DailyQuestTracker
+from app.services.game.daily_quests import QuestEvent
 from app.services.game.energy_service import EnergyService
 from app.services.game.loadout import PlayerLoadout
 from app.services.game.loadout_builder import LoadoutBuilder
@@ -96,6 +99,7 @@ class MatchRewards:
     loot: dict[str, LootDrop | None] = field(default_factory=dict)
     season: dict[str, SeasonChange | None] = field(default_factory=dict)
     streak: dict[str, StreakChange | None] = field(default_factory=dict)
+    quests: dict[str, list[CompletedQuest]] = field(default_factory=dict)
 
     @classmethod
     def empty(cls) -> "MatchRewards":
@@ -264,6 +268,14 @@ class DatabaseDuoPersistence:
                     user_id: change.after for user_id, change in changes.items()
                 },
             )
+            tracker = DailyQuestTracker(DailyQuestRepository(db))
+            now = datetime.now(UTC)
+            quests = {
+                user_id: await tracker.track_quietly(
+                    user_id, _quest_event(match, result, user_id), now
+                )
+                for user_id in settlements
+            }
             rewards = MatchRewards(
                 rating=changes,
                 exp={user_id: s.exp for user_id, s in settlements.items()},
@@ -271,6 +283,7 @@ class DatabaseDuoPersistence:
                 loot={user_id: s.loot for user_id, s in settlements.items()},
                 season={user_id: s.season for user_id, s in settlements.items()},
                 streak={user_id: s.streak for user_id, s in settlements.items()},
+                quests=quests,
             )
 
             record = await matches.get_by_id(match.match_id)
@@ -369,6 +382,20 @@ def _reward_inputs(match: LiveMatch, result: MatchResult) -> dict[str, RewardInp
         for user_id, outcome in result.outcome_by_user.items()
         if user_id in match.players
     }
+
+
+def _quest_event(match: LiveMatch, result: MatchResult, user_id: str) -> QuestEvent:
+    """What a match counts toward one player's daily quests. Walking out still
+    keeps the answers given, but it is not a match played."""
+    player = match.players[user_id]
+    forfeited = user_id == result.forfeit_user_id
+    won = result.outcome_by_user.get(user_id) is MatchOutcome.WIN
+    return QuestEvent(
+        correct_answers=player.correct_count,
+        best_combo=player.best_combo,
+        pvp_played=0 if forfeited else 1,
+        pvp_won=1 if won else 0,
+    )
 
 
 def _rating_update(record: DuoRating, new_rating: int, score: float) -> dict[str, object]:

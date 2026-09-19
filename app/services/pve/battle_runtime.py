@@ -38,6 +38,7 @@ from app.models.content.challenge import ChallengeType
 from app.models.game.skill import SkillEffect
 from app.models.pve.lesson_battle import BattleEndReason, BattleStatus
 from app.schemas.content.course_content import ChallengePublicRead
+from app.schemas.game.quest import QuestCompletedRead
 from app.schemas.pve.events import (
     ActiveEffectRead,
     AnswerResultData,
@@ -68,6 +69,7 @@ from app.services.game.combat import (
     gain_mana,
     resolve_blow,
 )
+from app.services.game.daily_quest_service import CompletedQuest
 from app.services.game.loadout import ActiveEffect, EquippedSkill, SkillUseRecord
 from app.services.game.settlement import ExpAward, GoldAward, LootDrop, StreakChange
 from app.services.pve import clock
@@ -710,6 +712,12 @@ class BattleEngine:
                 self.persistence.complete_lesson(battle.user_id, battle.lesson_id)
             )
         progress = await self.persistence.lesson_progress(battle.user_id, battle.lesson_id)
+        # After the lesson is completed, because finishing it can finish a quest.
+        quests = (
+            await self.persistence.quests_completed_since(battle.user_id, battle.started_wall)
+            if battle.persisted and battle.started_wall is not None
+            else []
+        )
 
         await _send(
             battle.websocket,
@@ -731,6 +739,7 @@ class BattleEngine:
                 lesson_progress=progress,
                 loot=_loot_read(rewards.loot),
                 streak=_streak_read(rewards.streak),
+                quests_completed=_quests_read(quests),
             ),
         )
         await self._teardown(battle)
@@ -888,6 +897,13 @@ def _streak_read(change: StreakChange | None) -> StreakChangeRead | None:
         best_day_streak=change.best_day_streak,
         extended=change.extended,
     )
+
+
+def _quests_read(quests: list[CompletedQuest]) -> list[QuestCompletedRead]:
+    return [
+        QuestCompletedRead(id=quest.id, title=quest.title, activity_points=quest.activity_points)
+        for quest in quests
+    ]
 
 
 async def _send(websocket: WebSocket | None, event: ServerEvent, data: BaseModel | None) -> None:

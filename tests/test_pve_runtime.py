@@ -13,6 +13,7 @@ rather than waiting five real seconds for it.
 """
 
 import asyncio
+from datetime import datetime
 from typing import Any
 
 import pytest
@@ -25,6 +26,7 @@ from app.models.pve.lesson_battle import BattleEndReason, BattleStatus
 from app.schemas.content.course_content import ChallengeOptionPublicRead, ChallengePublicRead
 from app.schemas.content.quiz import AnswerCheckResult, QuizSetWithAnswers
 from app.schemas.pve.events import ErrorCode, LessonProgressChange, ServerEvent
+from app.services.game.daily_quest_service import CompletedQuest
 from app.services.game.loadout import EquippedSkill, PlayerLoadout, default_loadout
 from app.services.game.settlement import ExpAward, GoldAward
 from app.services.pve import battle_runtime, clock
@@ -197,6 +199,9 @@ class FakePersistence:
         self.graded: list[tuple[str, str, list[str]]] = []
         # Every lesson the engine asked to be marked finished, in order.
         self.completed: list[tuple[str, str]] = []
+        # Daily quests the battle "finished", and when the engine asked.
+        self.quests_done: list[CompletedQuest] = []
+        self.quest_reads: list[tuple[str, datetime]] = []
         self.progress = LessonProgressChange(
             status=LessonProgressStatus.IN_PROGRESS, correct=1, total=QUESTION_COUNT
         )
@@ -265,6 +270,13 @@ class FakePersistence:
     async def lesson_progress(self, user_id: str, lesson_id: str) -> LessonProgressChange:
         await asyncio.sleep(0)
         return self.progress
+
+    async def quests_completed_since(
+        self, user_id: str, since: datetime
+    ) -> list[CompletedQuest]:
+        await asyncio.sleep(0)
+        self.quest_reads.append((user_id, since))
+        return list(self.quests_done)
 
 
 def _user(user_id: str = "alice") -> User:
@@ -619,6 +631,27 @@ async def test_dropping_the_monster_finishes_the_lesson_behind_the_gate() -> Non
 
     assert socket.first(ServerEvent.BATTLE_FINISHED) is not None
     assert persistence.completed == [(user.id, LESSON)]
+
+
+async def test_the_finish_names_the_daily_quests_the_battle_finished() -> None:
+    """Read after the lesson is completed, from the moment the battle began,
+    so a quest finished by completing the lesson is on the list too."""
+    persistence = FakePersistence(monster=_monster(max_hp=20))
+    persistence.quests_done = [CompletedQuest(id="q-1", title="Thắng 1 ải", activity_points=20)]
+    engine = _engine(persistence)
+    socket, user = await _start(engine)
+
+    await _answer(engine, user, socket, correct=True)
+    await _settle()
+
+    finished = socket.first(ServerEvent.BATTLE_FINISHED)
+    assert finished is not None
+    assert finished["quests_completed"] == [
+        {"id": "q-1", "title": "Thắng 1 ải", "activity_points": 20}
+    ]
+    [(reader, since)] = persistence.quest_reads
+    assert reader == user.id
+    assert since == persistence.created[0].started_wall
 
 
 async def test_walking_out_does_not_finish_the_lesson() -> None:

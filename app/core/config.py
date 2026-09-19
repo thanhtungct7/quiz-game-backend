@@ -74,6 +74,10 @@ class Settings(BaseSettings):
     # The local hour (Vietnam time, see app/services/game/streak.py) from which learners
     # who have not studied today are reminded.
     streak_reminder_hour: int = Field(default=20, ge=0, le=23)
+    # Same clock: from this local time, learners who studied today but have not
+    # finished their daily quests (or opened the chests they earned) are nudged.
+    quest_reminder_hour: int = Field(default=21, ge=0, le=23)
+    quest_reminder_minute: int = Field(default=30, ge=0, le=59)
 
     # AI conversation practice (DeepSeek). Left empty, the conversation routes answer 503
     # and nothing else in the app notices.

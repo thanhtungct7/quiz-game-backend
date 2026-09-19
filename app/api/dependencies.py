@@ -26,6 +26,7 @@ from app.repository.game.achievement_repository import AchievementRepository
 from app.repository.game.activity_repository import ActivityRepository
 from app.repository.game.benchmark_exam_repository import BenchmarkExamRepository
 from app.repository.game.catalog_repository import CatalogRepository
+from app.repository.game.daily_quest_repository import DailyQuestRepository
 from app.repository.game.game_profile_repository import GameProfileRepository
 from app.repository.game.gold_transaction_repository import GoldTransactionRepository
 from app.repository.game.item_repository import ItemRepository
@@ -55,6 +56,7 @@ from app.services.conversation.conversation_service import ConversationService
 from app.services.duo.duo_service import DuoService
 from app.services.game.achievement_service import AchievementService
 from app.services.game.benchmark_exam_service import BenchmarkExamService
+from app.services.game.daily_quest_service import DailyQuestService, DailyQuestTracker
 from app.services.game.game_service import GameService
 from app.services.game.lesson_rewards import LessonRewardService
 from app.services.notification.notification_service import NotificationService
@@ -217,6 +219,7 @@ def get_progress_service(db: DatabaseSession) -> ProgressService:
             profiles=GameProfileRepository(db),
             activity=ActivityRepository(db),
             achievements=AchievementService(AchievementRepository(db)),
+            quests=DailyQuestTracker(DailyQuestRepository(db)),
         ),
     )
 
@@ -231,6 +234,15 @@ def get_game_service(db: DatabaseSession) -> GameService:
         items=ItemRepository(db),
         seasons=SeasonRepository(db),
         ratings=DuoRatingRepository(db),
+    )
+
+
+def get_daily_quest_service(db: DatabaseSession) -> DailyQuestService:
+    return DailyQuestService(
+        quests=DailyQuestRepository(db),
+        profiles=GameProfileRepository(db),
+        ledger=GoldTransactionRepository(db),
+        items=ItemRepository(db),
     )
 
 
@@ -250,7 +262,6 @@ def get_profile_service(db: DatabaseSession) -> ProfileService:
         achievements=AchievementService(AchievementRepository(db)),
         config=settings,
     )
-
 
 
 def get_duo_service(db: DatabaseSession) -> DuoService:
@@ -291,6 +302,7 @@ def get_conversation_service(db: DatabaseSession) -> ConversationService:
         profiles=GameProfileRepository(db),
         llm=get_llm_client(),
         config=settings,
+        quests=DailyQuestTracker(DailyQuestRepository(db)),
     )
 
 
@@ -314,6 +326,7 @@ QuizServiceDependency = Annotated[QuizService, Depends(get_quiz_service)]
 ProgressServiceDependency = Annotated[ProgressService, Depends(get_progress_service)]
 DuoServiceDependency = Annotated[DuoService, Depends(get_duo_service)]
 GameServiceDependency = Annotated[GameService, Depends(get_game_service)]
+DailyQuestServiceDependency = Annotated[DailyQuestService, Depends(get_daily_quest_service)]
 BenchmarkExamServiceDependency = Annotated[
     BenchmarkExamService, Depends(get_benchmark_exam_service)
 ]
